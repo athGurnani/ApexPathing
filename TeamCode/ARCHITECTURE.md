@@ -45,4 +45,5 @@ classDiagram
     HardwareManager <|.. MotorManager : Motor HW System
     HardwareManager <|.. SwervePods : Swerve HW System
     Drivetrain <|.. TankDrivetrain : Tank Drive
+    HardwareManager o-->
 ```
