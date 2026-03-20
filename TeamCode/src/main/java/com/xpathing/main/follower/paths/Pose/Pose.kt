@@ -5,6 +5,33 @@ data class Pose(
     var y : Double,
     var heading : Double
 ) {
+    fun reflectX(at: Double): Pose {
+        y = 2 * at - y
+        theta = normalize(-theta)
+        return this
+    }
+
+    /**
+    *@param at A [Double] that we can flip the pose over (x = at)
+    *@return A [Pose] that contains the reflection of the pose over the y-axis parallel line
+    */
+    fun reflectY(at: Double): Pose {
+        x = 2 * at - x
+        theta = normalize(PI - theta)
+        return this
+    }
+
+    /**
+    *@param at A [Double] offset for the line y = x + at
+    *@return A [Pose] that contains the reflection of the pose over the line y = x + at
+    */
+    fun reflectYX(at: Double): Pose { 
+        val oldX = x
+        x = y - at
+        y = oldX + at
+        theta = normalize(PI / 2.0 - theta)
+        return this
+    }
     fun addPose(other: Pose): Pose {
         return Pose(
             x + other.x,
