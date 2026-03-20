@@ -53,11 +53,21 @@ classDiagram
 classDiagram
     class Localizer {
         <<interface>>
+        > poseTracker: PoseTracker
         +getPosition(): Pose
         +getVelocity(): Velocity
         +Anything else you need
         - Interacts with physical localization hardware
+        - Pose Tracker handles all interactions
+        - Most calls should re-direct to pose tracker
+        - Extra HWManager might be unnecessary, but maybe helpful for organization??
         - Pinpoint, 2-wheel, 3-wheel + IMU, 3-wheel, Drive Enc, OTOS(its a bum according to xandy)
+    }
+    class PoseTracker {
+        > currPose: Pose
+        > currVel: Vector
+        - Handles all the math for tracking position directly from localizer
+        - Should also be the only part of the localizer to interact with user/other systems
     }
     class PinpointLocalizer {
         impl: Localizer
@@ -103,4 +113,5 @@ classDiagram
     Localizer <|.. ThreeWheelIMULocalizer : 3-wheel + IMU
     Localizer <|.. DriveEncLocalizer : Drive Encoder
     Localizer <|.. OTOSLocalizer : OTOS - idk if we doing it
+    Localizer <--* PoseTracker : External Affairs.
 ```
