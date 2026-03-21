@@ -283,7 +283,7 @@ data class Pose(
      *
      * @return The string with x-y, heading, and coordSys information
      */
-    fun debug(): String = "Pose { x: $x, y: $y, heading: $heading } in ${coordSystem.toString()}"
+    fun debug(): String = "Pose { x: $x, y: $y, heading: $heading } in ${coordSystem.name()}"
 }
 
 /**
