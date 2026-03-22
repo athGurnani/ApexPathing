@@ -10,6 +10,11 @@ import org.firstinspires.ftc.robotcore.external.Telemetry;
 
 import org.jetbrains.annotations.NotNull;
 
+/*
+* Drivetrain base class extended by MecanumDrive, TankDrive and SwerveDrive
+* @Author Sohum Arora 22985
+*/
+
 public abstract class Drivetrain {
     public DcMotorEx leftFront, leftRear, rightFront, rightRear;
     Telemetry telemetry;
