@@ -1,6 +1,10 @@
 package com.apexpathing.localization;
 
+import com.apexpathing.geometry.Pose2d;
 import com.apexpathing.util.math.Pose;
+import com.qualcomm.hardware.limelightvision.LLResult;
+import com.qualcomm.hardware.limelightvision.LLResultTypes;
+import com.qualcomm.hardware.limelightvision.Limelight3A;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 
 /**
@@ -23,9 +27,17 @@ public class LimelightLocalizer implements Localizer {
         // For now, this is a skeleton.
     }
 
-    @Override
+    /**
+     * Gets a pose 2d from the limelight assuming it's setup correctly
+     * @return the limelight in Pose 2D,
+     */
     public Pose getPose() {
-        return currentPose;
+        Pose3D botPose = limelightResult.getBotpose_MT2();
+        double x = botPose.getPosition().x;
+        double y = botPose.getPosition().y;
+        double heading = botPose.getOrientation().getYaw(AngleUnit.RADIANS);
+        Pose returnPose = new Pose(x, y, heading);
+        return returnPose;
     }
 
     @Override
