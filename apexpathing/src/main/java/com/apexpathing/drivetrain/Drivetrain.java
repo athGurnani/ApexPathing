@@ -10,6 +10,9 @@ import org.firstinspires.ftc.robotcore.external.Telemetry;
 
 import org.jetbrains.annotations.NotNull;
 
+import java.util.Arrays;
+import java.util.List;
+
 /**
  * abstract drivetrain base class
  * @author Sohum Arora
@@ -158,6 +161,9 @@ public abstract class Drivetrain {
         telemetry.addData("rightFrontServo pos", rightFrontServo.getPosition());
         telemetry.addData("leftRearServo pos", leftRearServo.getPosition());
         telemetry.addData("rightRearServo pos", rightRearServo.getPosition());
+    }
+    public List<DcMotorEx> getMotors() {
+        return Arrays.asList(leftFront, rightFront, leftRear, rightRear);
     }
 
 }
