@@ -16,6 +16,7 @@ import drivetrains.Drivetrain;
 import localizers.Localizer;
 import util.Pose;
 
+/** NOTE THIS IS BROKEN, IT WILL NOT WORK **/
 @TeleOp(name = "Auto Heading Tuner", group = "Apex Pathing Tuning")
 public class AutoHeadingTuner extends LinearOpMode {
     private Drivetrain drivetrain;
@@ -39,7 +40,7 @@ public class AutoHeadingTuner extends LinearOpMode {
 
             controller = new PDFLController(new PDFLCoefficients(proportionalGain, derivativeGain, minPower));
             controller.setDeadzone(deadzone);
-            controller.useAsAngularController();
+            controller.setAngularController();
 
             timer = new ElapsedTime();
             telemetry = PanelsTelemetry.INSTANCE.getFtcTelemetry();
@@ -208,7 +209,7 @@ public class AutoHeadingTuner extends LinearOpMode {
     }
 
     private void turnTo(double error) {
-        drivetrain.moveWithVectors(0, 0, -controller.calculateFromError(error));
+        drivetrain.moveWithVectors(0, 0, -controller.calculate(error));
     }
 
     private void update() { localizer.update(); }

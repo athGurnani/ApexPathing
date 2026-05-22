@@ -13,6 +13,7 @@ import controllers.PDFLController;
 import drivetrains.Drivetrain;
 import followers.constants.P2PFollowerConstants;
 import localizers.Localizer;
+import util.Angle;
 import util.Pose;
 
 /**
@@ -22,6 +23,7 @@ import util.Pose;
  *
  * @author Joel - 7842 Browncoats Alumni
  * @author Dylan B. - 18597 RoboClovers - Delta
+ * @author Sohum Arora - 22985 Paraducks
  */
 @Configurable
 @TeleOp(name = "Heading Tuner", group = "Apex Pathing Tuning")
@@ -36,6 +38,9 @@ public class HeadingTuner extends OpMode {
     public static double proportionalGain; // kP
     public static double derivativeGain; // kD
     public static double minPower; // kL
+    private boolean wasAtTarget = false;
+
+    private double rawOutput;
 
     @Override
     public void init() {
@@ -64,8 +69,9 @@ public class HeadingTuner extends OpMode {
 
     private void moveToTarget(double target) {
         this.target = target;
-        double error = target - this.localizer.getPose().getHeading();
-        this.drivetrain.moveWithVectors(0, 0, -this.controller.calculateFromError(error));
+        controller.setTarget(target);
+        this.rawOutput = -this.controller.calculate(this.localizer.getPose().getHeading());
+        this.drivetrain.moveWithVectors(0, 0, rawOutput);
     }
 
     @Override
@@ -86,8 +92,20 @@ public class HeadingTuner extends OpMode {
             drivetrain.stop();
         }
 
+        boolean atTarget = controller.isAtTarget();
+        if (atTarget && !wasAtTarget) { //Gamepad rumble and Led green when at target
+            gamepad1.rumble(0.5, 0.5, 100);
+            gamepad1.setLedColor(0, 1, 0, 300);
+        } else if (!atTarget) { //Led red when not at target
+            gamepad1.setLedColor(1, 0, 0, 100);
+        }
+        wasAtTarget = atTarget;
+
         fullTelem.addData("Target: ", target);
         fullTelem.addData("Position: ", localizer.getPose().getHeading());
+        fullTelem.addData("Error: ", controller.getError());
+        fullTelem.addData("Raw Controller Output: ", rawOutput);
+        fullTelem.addData("Drivetrain Output: ", drivetrain.toString());
         fullTelem.update();
     }
 }

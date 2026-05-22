@@ -22,6 +22,7 @@ import util.Pose;
  *
  * @author Joel - 7842 Browncoats Alumni
  * @author Dylan B. - 18597 RoboClovers - Delta
+ * @author Sohum Arora - 22985 Paraducks
  */
 @Configurable
 @TeleOp(name = "Axial Tuner", group = "Apex Pathing Tuning")
@@ -38,6 +39,8 @@ public class AxialTuner extends OpMode {
     public static double proportionalGain; // kP
     public static double derivativeGain; // kD
     public static double minPower; // kL
+    private boolean wasAtTarget = false;
+    private double rawOutput;
 
     @Override
     public void init() {
@@ -52,6 +55,7 @@ public class AxialTuner extends OpMode {
 
         // Extract the controllers, coefficients, and deadzone from the constants class
         headingController = followerConstants.headingController;
+        headingController.setTarget(0);
         controller = followerConstants.axialController;
         proportionalGain = controller.getCoefficients().kP;
         derivativeGain = controller.getCoefficients().kD;
@@ -66,17 +70,17 @@ public class AxialTuner extends OpMode {
 
     private void moveToTarget(double target) {
         this.target = target;
+        controller.setTarget(target);
 
         double turn = 0;
         if (maintainHeading) {
-            double headingError = 0 - this.localizer.getPose().getHeading(); // Target heading is 0 degrees
-            turn = headingController.calculateFromError(headingError);
+            turn = -headingController.calculate(this.localizer.getPose().getHeading());
         } else {
             headingController.reset(); // Prevent derivative kick when not maintaining heading
         }
 
-        double error = target - this.localizer.getPose().getX();
-        this.drivetrain.moveWithVectors(this.controller.calculateFromError(error), 0, turn);
+        this.rawOutput = controller.calculate( this.localizer.getPose().getX());
+        this.drivetrain.moveWithVectors(rawOutput, 0, turn);
     }
 
     @Override
@@ -99,8 +103,20 @@ public class AxialTuner extends OpMode {
             drivetrain.stop();
         }
 
+        boolean atTarget = controller.isAtTarget();
+        if (atTarget && !wasAtTarget) { // Gamepad rumble and Led green when at target
+            gamepad1.rumble(0.5, 0.5, 100);
+            gamepad1.setLedColor(0, 1, 0, 300);
+        } else if (!atTarget) { // Led red when not at target
+            gamepad1.setLedColor(1, 0, 0, 100);
+        }
+        wasAtTarget = atTarget;
+
         fullTelem.addData("Target: ", target);
         fullTelem.addData("Position: ", localizer.getPose().getX());
+        fullTelem.addData("Error: ", controller.getError());
+        fullTelem.addData("Raw Controller Output: ", rawOutput);
+        fullTelem.addData("Drivetrain Output: ", drivetrain.toString());
         fullTelem.update();
     }
 }
