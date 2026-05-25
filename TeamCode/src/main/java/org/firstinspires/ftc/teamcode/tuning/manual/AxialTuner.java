@@ -13,10 +13,11 @@ import controllers.PDFLController;
 import drivetrains.Drivetrain;
 import followers.constants.P2PFollowerConstants;
 import localizers.Localizer;
+import util.Distance;
 import util.Pose;
 
 /**
- * OpMode for tuning the axial (drive) controller with Panels. Hold X to move the robot 24 inches forward,,
+ * OpMode for tuning the axial (drive) controller with Panels. Hold X to move the robot 64 inches forward,,
  * hold B to move 6 inches backwards, and hold A to move it back to the start position. Adjust the
  * proportional gain, derivative gain, minimum power, and deadzone in Panels.
  *
@@ -39,6 +40,8 @@ public class AxialTuner extends OpMode {
     public static double proportionalGain; // kP
     public static double derivativeGain; // kD
     public static double minPower; // kL
+    public static double tolerance; // Tolerance for being at the target (inches)
+
     private boolean wasAtTarget = false;
     private double rawOutput;
 
@@ -56,14 +59,16 @@ public class AxialTuner extends OpMode {
         // Extract the controllers, coefficients, and deadzone from the constants class
         headingController = followerConstants.headingController;
         headingController.setTarget(0);
+
         controller = followerConstants.axialController;
         proportionalGain = controller.getCoefficients().kP;
         derivativeGain = controller.getCoefficients().kD;
         minPower = controller.getCoefficients().kL;
         deadzone = controller.getDeadzone();
+        tolerance = controller.getTolerance();
 
         fullTelem.addLine(
-                "Hold X to move forward 24 inches, B to move backward 6 inches, and A to drive back to the start position."
+                "Hold X to move forward 64 inches, B to move backward 6 inches, and A to drive back to the start position."
         );
         fullTelem.update();
     }
@@ -74,7 +79,7 @@ public class AxialTuner extends OpMode {
 
         double turn = 0;
         if (maintainHeading) {
-            turn = -headingController.calculate(this.localizer.getPose().getHeading());
+            turn = headingController.calculate(this.localizer.getPose().getHeading());
         } else {
             headingController.reset(); // Prevent derivative kick when not maintaining heading
         }
@@ -89,9 +94,10 @@ public class AxialTuner extends OpMode {
 
         controller.setCoefficients(new PDFLCoefficients(proportionalGain, derivativeGain, minPower));
         controller.setDeadzone(deadzone);
+        controller.setTolerance(new Distance(tolerance)); // Inches
 
-        if (gamepad1.x) { // Move 24 inches forward when X is held
-            moveToTarget(24);
+        if (gamepad1.x) { // Move 64 inches forward when X is held
+            moveToTarget(64);
         } else if (gamepad1.b) { // Move 6 inches backward when B is held
             moveToTarget(-6);
         } else if (gamepad1.a) { // Move back to 0 when A is held
@@ -115,6 +121,7 @@ public class AxialTuner extends OpMode {
         fullTelem.addData("Target: ", target);
         fullTelem.addData("Position: ", localizer.getPose().getX());
         fullTelem.addData("Error: ", controller.getError());
+        fullTelem.addData("At Target: ", atTarget);
         fullTelem.addData("Raw Controller Output: ", rawOutput);
         fullTelem.addData("Drivetrain Output: ", drivetrain.toString());
         fullTelem.update();
