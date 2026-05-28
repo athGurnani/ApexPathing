@@ -5,6 +5,10 @@ import androidx.annotation.NonNull;
 
 import paths.geometry.BSpline;
 
+/**
+ * @author Atharv G. - 13085 Bionic Dutch
+ */
+
 public class Vector {
     Distance magnitude;
     Angle theta;
