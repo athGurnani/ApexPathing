@@ -2,12 +2,14 @@ package util;
 
 import androidx.annotation.NonNull;
 
+
 import paths.geometry.BSpline;
 
 public class Vector {
-    Distance x;
-    Distance y;
-    Distance.Units unit;
+    Distance magnitude;
+    Angle theta;
+    Distance.Units distUnit;
+    Angle.Units angleUnit;
 
     // region Constructors and factory methods
     
@@ -15,12 +17,10 @@ public class Vector {
      * Constructor for the {@link Vector} class
      * @param x the x component of the vector
      * @param y the y component of the vector
-     * @param unit the input and output unit
+     * @param translationalUnit the input and output unit
      */
-    public Vector(double x, double y, Distance.Units unit) {
-        this.x = Distance.from(unit, x);
-        this.y = Distance.from(unit, y);
-        this.unit = unit;
+    public Vector(double x, double y, Distance.Units translationalUnit) {
+        setVals(x, y, translationalUnit);
     }
 
     /**
@@ -28,8 +28,9 @@ public class Vector {
      * @param x the x component of the vector
      * @param y the y component of the vector
      */
-    public Vector(double x, double y) { 
-        this(x, y, Distance.Units.INCHES); 
+    public Vector(double x, double y) {
+
+        this(x, y, Distance.Units.INCHES);
     }
 
     /**
@@ -38,9 +39,7 @@ public class Vector {
      * @param y the y {@link Distance} of the vector
      */
     public Vector(Distance x, Distance y) { 
-        this.x = x; 
-        this.y = y; 
-        this.unit = Distance.Units.INCHES; // Defaulting unit to ensure safety
+        this(x.getIn(), y.getIn());
     }
 
     /**
@@ -64,19 +63,19 @@ public class Vector {
     // region Getters
     
     /** @return the x component as a double in the current unit */
-    public double getX() { return this.x.get(this.unit); }
+    public double getX() { return this.magnitude.get(distUnit) * Math.cos(theta.get(angleUnit)); }
     
     /** @return the y component as a double in the current unit */
-    public double getY() { return this.y.get(this.unit); }
+    public double getY() { return this.magnitude.get(distUnit) * Math.sin(theta.get(angleUnit)); }
 
     /** @return the x component as a {@link Distance} object */
-    public Distance getXComponent() { return this.x; }
+    public Distance getXComponent() { return this.magnitude.multiply(Math.cos(theta.get(angleUnit))); }
     
     /** @return the y component as a {@link Distance} object */
-    public Distance getYComponent() { return this.y; }
+    public Distance getYComponent() { return this.magnitude.multiply(Math.sin(theta.get(angleUnit))); }
 
     /** @return the current unit of measurement for this vector */
-    public Distance.Units getUnit() { return this.unit; }
+    public Distance.Units getUnit() { return this.distUnit; }
     
     // endregion
 
@@ -85,17 +84,30 @@ public class Vector {
     /** * Sets the x component of the vector 
      * @param x the new x value in the current unit
      */
-    public void setX(double x) { this.x = Distance.from(this.unit, x); }
+    public void setX(double x) { setVals(x, this.getY(), distUnit); }
     
     /** * Sets the y component of the vector 
      * @param y the new y value in the current unit
      */
-    public void setY(double y) { this.y = Distance.from(this.unit, y); }
+    public void setY(double y) { setVals(this.getX(), y, distUnit); }
 
     /** * Sets the unit of measurement for this vector 
-     * @param unit the new unit
+     * @param dist  The desired distance unit of the vector
+     * @param angle The desired angular unit of the vector
      */
-    public void setUnit(Distance.Units unit) { this.unit = unit; }
+    public void setUnits(Distance.Units dist, Angle.Units angle) { setVals(magnitude.get(distUnit), theta.get(angleUnit), dist, angle); }
+
+    public void setVals(double x, double y, Distance.Units unit) {
+        this.magnitude = Distance.from(distUnit, Math.hypot(x, y));
+        this.theta = Angle.from(angleUnit, Math.atan2(y,x));
+        this.distUnit = unit;
+    }
+
+    public void setVals(double magnitude, double theta, Distance.Units distUnit, Angle.Units angleUnit) {
+        this.magnitude = Distance.from(distUnit, magnitude);
+        this.distUnit = distUnit;
+        this.theta = Angle.from(angleUnit, theta);
+    }
     
     // endregion
 
@@ -142,9 +154,7 @@ public class Vector {
      * @param value the new angle in radians
      */
     public void setTheta(double value) {
-        double r = getMagnitude();
-        setX(r * Math.cos(value));
-        setY(r * Math.sin(value));
+        theta = new Angle(value);
     }
 
     /**
@@ -153,7 +163,7 @@ public class Vector {
      * @return the dot product
      */
     public double dotProduct(Vector other) {
-        return (this.getX() * other.x.get(this.unit)) + (this.getY() * other.y.get(this.unit));
+        return (this.getX() * other.getXComponent().get(this.distUnit)) + (this.getY() * other.getYComponent().get(this.distUnit));
     }
 
     /**
@@ -162,7 +172,7 @@ public class Vector {
      * @return the magnitude of the cross product
      */
     public double crossProduct(Vector other) {
-        return (this.getX() * other.y.get(this.unit)) - (this.getY() * other.x.get(this.unit));
+        return (this.getX() * other.getYComponent().get(this.distUnit)) - (this.getY() * other.getXComponent().get(this.distUnit));
     }
 
     /**
@@ -199,7 +209,7 @@ public class Vector {
         if (mag > 1e-9) {
             return this.div(mag);
         }
-        return new Vector(0.0, 0.0, this.unit);
+        return new Vector(0.0, 0.0, this.distUnit);
     }
 
     /**
@@ -208,7 +218,7 @@ public class Vector {
      * @return A new Vector representing the sum
      */
     public Vector add(Vector other) {
-        return new Vector(this.getX() + other.x.get(this.unit), this.getY() + other.y.get(this.unit), this.unit);
+        return new Vector(this.getX() + other.getXComponent().get(this.distUnit), this.getY() + other.getYComponent().get(this.distUnit), this.distUnit);
     }
 
     /**
@@ -217,7 +227,7 @@ public class Vector {
      * @return A new Vector representing the difference
      */
     public Vector subtract(Vector other) {
-        return new Vector(this.getX() - other.x.get(this.unit), this.getY() - other.y.get(this.unit), this.unit);
+        return new Vector(this.getX() - other.getXComponent().get(this.distUnit), this.getY() - other.getYComponent().get(this.distUnit), this.distUnit);
     }
 
     /**
@@ -226,7 +236,7 @@ public class Vector {
      * @return A new scaled Vector
      */
     public Vector multiply(double scalar) {
-        return new Vector(getX() * scalar, getY() * scalar, this.unit);
+        return new Vector(getX() * scalar, getY() * scalar, this.distUnit);
     }
 
     /**
@@ -235,7 +245,7 @@ public class Vector {
      * @return A new scaled Vector
      */
     public Vector div(double scalar) {
-        return new Vector(getX() / scalar, getY() / scalar, this.unit);
+        return new Vector(getX() / scalar, getY() / scalar, this.distUnit);
     }
 
     /**
@@ -271,7 +281,7 @@ public class Vector {
      * @return a completely new Vector with the same properties
      */
     public Vector copy() { 
-        return new Vector(this.getX(), this.getY(), this.unit); 
+        return new Vector(this.getX(), this.getY(), this.distUnit);
     }
 
     /**
@@ -288,7 +298,7 @@ public class Vector {
     @Override
     @NonNull
     public String toString() { 
-        return String.format("Vector(x: %.3f %s, y: %.3f %s)", getX(), unit.name().toLowerCase(), getY(), unit.name().toLowerCase()); 
+        return String.format("Vector(x: %.3f %s, y: %.3f %s)", getX(), getY(), distUnit.name().toLowerCase(), getY());
     }
 
     /**
