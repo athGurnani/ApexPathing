@@ -78,6 +78,8 @@ public abstract class Follower {
         holdingPose = true;
     }
 
+    public boolean isHoldingPose() { return holdingPose; }
+
     /**
      * Stops the robot and aborts any active path following
      */
@@ -132,4 +134,7 @@ public abstract class Follower {
      * @return the robot's current velocity estimate from the localizer
      */
     public Pose getVelocity() { return localizer.getVelocity(); }
+    public void breakFollowing() {
+        this.stop();
+    }
 }
