@@ -10,11 +10,11 @@ import org.firstinspires.ftc.teamcode.Constants;
 
 import controllers.PDSController.PDSCoefficients;
 import controllers.PDSController;
-import drivetrains.Drivetrain;
+import drivetrains.BaseDrivetrain;
 import followers.constants.P2PFollowerConstants;
-import localizers.Localizer;
-import util.Angle;
-import util.Pose;
+import localizers.BaseLocalizer;
+import geometry.Angle;
+import geometry.Pose;
 
 /**
  * OpMode for tuning the heading controller with Panels. Hold A to turn the robot 180 degrees and
@@ -28,8 +28,8 @@ import util.Pose;
 @Configurable
 @TeleOp(name = "Heading Tuner", group = "Apex Pathing Tuning")
 public class HeadingTuner extends OpMode {
-    private Drivetrain drivetrain;
-    private Localizer localizer;
+    private BaseDrivetrain<?> drivetrain;
+    private BaseLocalizer<?> localizer;
     private PDSController controller;
     private JoinedTelemetry fullTelem;
 
@@ -74,7 +74,7 @@ public class HeadingTuner extends OpMode {
     private void moveToTarget(double target) {
         this.target = target;
         controller.setTarget(target);
-        this.rawOutput = this.controller.calculate(this.localizer.getPose().getHeading());
+        this.rawOutput = this.controller.calculate(this.localizer.getPose().getHeading().getRad());
         this.drivetrain.moveWithVectors(0, 0, rawOutput);
     }
 
@@ -84,7 +84,7 @@ public class HeadingTuner extends OpMode {
 
         controller.setCoefficients(new PDSCoefficients(kP, kD, kS, kSDeadzone));
         controller.setDeadzone(outputDeadzone);
-        controller.setTolerance(new Angle(tolerance));
+        controller.setTolerance(Angle.fromRad(tolerance));
 
         if (gamepad1.x) { // Move to 180 degrees when X is held
             moveToTarget(Math.PI);

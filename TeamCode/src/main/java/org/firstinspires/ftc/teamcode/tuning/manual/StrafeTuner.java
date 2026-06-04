@@ -10,11 +10,11 @@ import org.firstinspires.ftc.teamcode.Constants;
 
 import controllers.PDSController.PDSCoefficients;
 import controllers.PDSController;
-import drivetrains.Drivetrain;
+import drivetrains.BaseDrivetrain;
 import followers.constants.P2PFollowerConstants;
-import localizers.Localizer;
-import util.Distance;
-import util.Pose;
+import localizers.BaseLocalizer;
+import geometry.Dist;
+import geometry.Pose;
 
 /**
  * OpMode for tuning the strafe controller with Panels. Hold X to move the robot 64 inches left,
@@ -29,8 +29,8 @@ import util.Pose;
 @Configurable
 @TeleOp(name = "Strafe Tuner", group = "Apex Pathing Tuning")
 public class StrafeTuner extends OpMode {
-    private Drivetrain drivetrain;
-    private Localizer localizer;
+    private BaseDrivetrain<?> drivetrain;
+    private BaseLocalizer<?> localizer;
     private PDSController controller;
     private PDSController headingController;
     private JoinedTelemetry fullTelem;
@@ -81,12 +81,12 @@ public class StrafeTuner extends OpMode {
 
         double turn = 0;
         if (maintainHeading) {
-            turn = headingController.calculate(this.localizer.getPose().getHeading());
+            turn = headingController.calculate(this.localizer.getPose().getHeading().getRad());
         } else {
             headingController.reset(); // Prevent derivative kick when not maintaining heading
         }
 
-        this.rawOutput = controller.calculate(this.localizer.getPose().getY());
+        this.rawOutput = controller.calculate(this.localizer.getPose().getY().getIn());
         this.drivetrain.moveWithVectors(0, this.rawOutput, turn);
     }
 
@@ -96,7 +96,7 @@ public class StrafeTuner extends OpMode {
 
         controller.setCoefficients(new PDSCoefficients(kP, kD, kS, kSDeadzone));
         controller.setDeadzone(outputDeadzone);
-        controller.setTolerance(new Distance(tolerance)); // Inches
+        controller.setTolerance(Dist.fromIn(tolerance)); // Inches
 
         if (gamepad1.x) { // Move 64 inches to the left when X is held
             moveToTarget(64);

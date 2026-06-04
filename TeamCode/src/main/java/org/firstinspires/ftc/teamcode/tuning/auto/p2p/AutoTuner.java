@@ -11,17 +11,18 @@ import java.util.concurrent.TimeUnit;
 
 import controllers.PDSController.PDSCoefficients;
 import controllers.PDSController;
-import drivetrains.Drivetrain;
+import drivetrains.BaseDrivetrain;
 import followers.constants.P2PFollowerConstants;
-import localizers.Localizer;
-import util.Angle;
-import util.Distance;
-import util.Pose;
+import localizers.BaseLocalizer;
+import geometry.Angle;
+import geometry.Dist;
+import geometry.Pose;
 
 /**
  * Base class for P2P follower PDS controller tuner OpModes
  * @author Joel - 7842 Browncoats Alumni
  * @author Dylan B. - 18597 RoboClovers - Delta
+ * @author Sohum Arora - 22985 Paraducks
  */
 public abstract class AutoTuner extends LinearOpMode {
     // Assigned by child classes
@@ -31,23 +32,21 @@ public abstract class AutoTuner extends LinearOpMode {
     // TODO: Adjust these constants based on testing
     final double HAS_MOVED_THRESHOLD = 0.025;
     final double BINARY_SEARCH_CONVERGENCE_THRESHOLD = 0.01;
-    final double INITIAL_MAX_KS_GUESS = 0.3;
+    final double INITIAL_MAX_KS_GUESS = 0.2;
     final double TIME_PER_GUESS_MS = 500;
     final long WAIT_TIME_BETWEEN_GUESSES_MS = 500;
     final double PD_TUNER_DURATION = 2000;
-    final double TARGET_SWITCH_WAIT_TIME_MS = 1000;
+    public final double TARGET_SWITCH_WAIT_TIME_MS = 1000;
 
     public JoinedTelemetry fullTelem;
-    public Drivetrain drivetrain;
-    public Localizer localizer;
+    public BaseDrivetrain<?> drivetrain;
+    public BaseLocalizer<?> localizer;
     public PDSController controller;
     public PDSController headingController; // For maintaining heading with translational controllers
     public ElapsedTime timer;
 
-    public static double kP;
-    public static double kD;
-    public static double kS;
-    public static double kSDeadzone;
+    // Use a unified PDSCoefficients object instead of static variables
+    public PDSCoefficients coeffs = new PDSCoefficients();
 
     public abstract double getCurrentPosition();
 
@@ -61,7 +60,7 @@ public abstract class AutoTuner extends LinearOpMode {
         drivetrain = constants.buildOnlyDrivetrain(hardwareMap);
         localizer = constants.buildOnlyLocalizer(hardwareMap, Pose.zero());
 
-        controller = new PDSController(new PDSCoefficients(kP, kD, kS, kSDeadzone));
+        controller = new PDSController(coeffs); // Supply unified coefficients directly
         if (angularTuner) {
             // For angular tuners, set the controller to angular mode
             controller.setAngularController();
@@ -116,7 +115,7 @@ public abstract class AutoTuner extends LinearOpMode {
             sleep(WAIT_TIME_BETWEEN_GUESSES_MS);
         }
 
-        kS = guess;
+        coeffs.kS = guess; // Save into unified object
     }
 
     public void kPkDTuner() {
@@ -165,7 +164,7 @@ public abstract class AutoTuner extends LinearOpMode {
             lastTime = System.nanoTime();
 
             double headingCorrection = angularTuner ? 0 :
-                    headingController.calculate(localizer.getPose().getHeading());
+                    headingController.calculate(localizer.getPose().getHeading().getRad());
             applyControl(1.0, headingCorrection);
         }
 
@@ -173,10 +172,10 @@ public abstract class AutoTuner extends LinearOpMode {
         double L = timeStamp - (velAtTimeStamp / maxAccel);
 
         // Derive parallel PD gains using Ziegler-Nichols open-loop formulas
-        kP = 1.2 / (L * maxAccel);
-        kD = 0.6 / maxAccel;
+        coeffs.kP = 1.2 / (L * maxAccel);
+        coeffs.kD = 0.6 / maxAccel;
 
-        controller.setCoefficients(new PDSController.PDSCoefficients(kP, kD, kS, kSDeadzone));
+        controller.setCoefficients(coeffs); // Assign fully tuned object
     }
 
     public void verification() {
@@ -197,7 +196,7 @@ public abstract class AutoTuner extends LinearOpMode {
         if (angularTuner) {
             controller.setTolerance(Angle.fromDeg(3)); // 2 degree tolerance
         } else {
-            controller.setTolerance(Distance.fromIn(1)); // 1 inch tolerance
+            controller.setTolerance(Dist.fromIn(1)); // 1 inch tolerance
             headingController.reset(); headingController.setTarget(0);
         }
 
@@ -206,9 +205,9 @@ public abstract class AutoTuner extends LinearOpMode {
             telemetry.addData("Phase", "3/3: Final Verification");
             telemetry.addLine("Press A on your gamepad to stop the test while you copy coefficients");
             telemetry.addLine();
-            telemetry.addData("Calculated kP", kP);
-            telemetry.addData("Calculated kD", kD);
-            telemetry.addData("Calculated kS", kS);
+            telemetry.addData("Calculated kP", coeffs.kP);
+            telemetry.addData("Calculated kD", coeffs.kD);
+            telemetry.addData("Calculated kS", coeffs.kS);
             telemetry.addLine();
             telemetry.addData("Current", currentPosition);
             telemetry.addData("Target", verificationTarget);
@@ -237,7 +236,7 @@ public abstract class AutoTuner extends LinearOpMode {
 
             double output = controller.calculate(currentPosition);
             double headingCorrection = angularTuner ? 0 :
-                    headingController.calculate(localizer.getPose().getHeading());
+                    headingController.calculate(localizer.getPose().getHeading().getRad());
             applyControl(output, headingCorrection);
 
             if (controller.isAtTarget()) {

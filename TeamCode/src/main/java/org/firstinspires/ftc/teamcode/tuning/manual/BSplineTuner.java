@@ -9,13 +9,16 @@ import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import org.firstinspires.ftc.teamcode.Constants;
 
 import controllers.PDSController.PDSCoefficients;
-import drivetrains.Drivetrain;
+import drivetrains.BaseDrivetrain;
 import followers.MovementFollower;
 import followers.constants.BSplineFollowerConstants;
-import localizers.Localizer;
+import localizers.BaseLocalizer;
+import paths.builders.Builder;
 import paths.movements.Path;
-import paths.builders.PathBuilder;
-import util.Pose;
+import geometry.Pose;
+import util.AngleUnit;
+import util.DistUnit;
+import util.PoseFactory;
 
 /**
  * OpMode for tuning the BSpline follower with Panels. Matches the architecture of AxialTuner.
@@ -27,16 +30,17 @@ import util.Pose;
 @Configurable
 @TeleOp(name = "BSpline Tuner", group = "Apex Pathing Tuning")
 public class BSplineTuner extends OpMode {
-    private Drivetrain drivetrain;
-    private Localizer localizer;
+    private BaseDrivetrain<?> drivetrain;
+    private BaseLocalizer<?> localizer;
     private MovementFollower follower;
     private BSplineFollowerConstants followerConstants;
     private JoinedTelemetry fullTelem;
+    private PoseFactory pose = new PoseFactory(DistUnit.IN, AngleUnit.DEG);
 
     // --- DASHBOARD TUNING VARIABLES ---
     public static double tP, tD, tS, tSDeadzone; // Translation PDS
     public static double hP, hD, hS, hSDeadzone; // Heading PDS
-    public static double vFF;                    // Velocity Feedforward
+    public static double kV;                    // Velocity Feedforward
     public static double headingTol;             // Heading Tolerance (Degrees)
     public static double distanceTol;            // Distance Tolerance (Inches)
     public static double tTol;                   // T-Parameter Tolerance
@@ -54,7 +58,8 @@ public class BSplineTuner extends OpMode {
         fullTelem = new JoinedTelemetry(PanelsTelemetry.INSTANCE.getFtcTelemetry(), telemetry);
 
         // Extract the constants specific to the BSpline follower
-        followerConstants = (BSplineFollowerConstants) constants.setBSplineFollowerConstants();
+        // NOTE: You must be using BSplineFollowerConstants
+        followerConstants = (BSplineFollowerConstants) constants.setFollowerConstants();
 
         // Populate Dashboard variables with the initial values from your Constants file
         tP = followerConstants.translationCoeffs.kP;
@@ -67,7 +72,7 @@ public class BSplineTuner extends OpMode {
         hS = followerConstants.headingCoeffs.kS;
         hSDeadzone = followerConstants.headingCoeffs.kSDeadzone;
 
-        vFF = followerConstants.velocityFF;
+        kV = followerConstants.kV;
         headingTol = Math.toDegrees(followerConstants.headingTolerance);
         distanceTol = followerConstants.distanceTolerance;
         tTol = followerConstants.tTolerance;
@@ -84,13 +89,17 @@ public class BSplineTuner extends OpMode {
     private void runPath(boolean forward) {
         if (!pathActive) {
             if (!forward) {
-                currentPath = new PathBuilder(localizer.getPose())
-                        .addControlPoints(new Pose(24, 24, Math.toRadians(90)), new Pose(0, 0, 0))
-                        .build();
+                currentPath = Builder.path(
+                        localizer.getPose(),
+                        pose.of(24, 24, 90),
+                        pose.of(0, 0, 0)
+                ).build();
             } else {
-                currentPath = new PathBuilder(localizer.getPose())
-                        .addControlPoints(new Pose(24, 24, Math.toRadians(90)), new Pose(48, 0, 0))
-                        .build();
+                currentPath = Builder.path(
+                        localizer.getPose(),
+                        pose.of(24, 24, 90),
+                        pose.of(48, 0, 0)
+                ).build();
             }
             follower.follow(currentPath);
             pathActive = true;
@@ -105,7 +114,7 @@ public class BSplineTuner extends OpMode {
         // Push Dashboard variable updates back into the active follower constants
         followerConstants.translationCoeffs = new PDSCoefficients(tP, tD, tS, tSDeadzone);
         followerConstants.headingCoeffs = new PDSCoefficients(hP, hD, hS, hSDeadzone);
-        followerConstants.velocityFF = vFF;
+        followerConstants.kV = kV;
         followerConstants.headingTolerance = Math.toRadians(headingTol);
         followerConstants.distanceTolerance = distanceTol;
         followerConstants.tTolerance = tTol;
@@ -115,6 +124,7 @@ public class BSplineTuner extends OpMode {
         } else if (gamepad1.a) { // Move back to start position when A is held
             runPath(false);
         } else {
+            // Safe fallback sequence clearing operational active paths to protect drive system
             follower.stop();
             drivetrain.stop();
             pathActive = false;
@@ -131,9 +141,9 @@ public class BSplineTuner extends OpMode {
         wasAtTarget = atTarget;
 
         fullTelem.addData("Target Path: ", pathActive ? "Active" : "Inactive");
-        fullTelem.addData("Position X: ", localizer.getPose().getX());
-        fullTelem.addData("Position Y: ", localizer.getPose().getY());
-        fullTelem.addData("Heading: ", Math.toDegrees(localizer.getPose().getHeading()));
+        fullTelem.addData("Position X: ", localizer.getPose().getX().getIn());
+        fullTelem.addData("Position Y: ", localizer.getPose().getY().getIn());
+        fullTelem.addData("Heading: ", localizer.getPose().getHeading().getRad());
         fullTelem.addData("At Target: ", atTarget);
         fullTelem.addData("Drivetrain Output: ", drivetrain.toString());
         fullTelem.update();

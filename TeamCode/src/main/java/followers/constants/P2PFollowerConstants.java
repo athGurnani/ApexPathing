@@ -2,11 +2,11 @@ package followers.constants;
 
 import controllers.PDSController.PDSCoefficients;
 import controllers.PDSController;
-import drivetrains.Drivetrain;
+import drivetrains.BaseDrivetrain;
 import followers.P2PFollower;
-import localizers.Localizer;
-import util.Angle;
-import util.Distance;
+import localizers.BaseLocalizer;
+import geometry.Angle;
+import geometry.Dist;
 
 /**
  * Point to point follower constants class
@@ -34,7 +34,7 @@ public class P2PFollowerConstants extends FollowerConstants {
     }
 
     @Override
-    public P2PFollower build(Drivetrain drivetrain, Localizer localizer) {
+    public P2PFollower build(BaseDrivetrain<?> drivetrain, BaseLocalizer<?> localizer) {
         return new P2PFollower(this, drivetrain, localizer);
     }
 
@@ -77,7 +77,7 @@ public class P2PFollowerConstants extends FollowerConstants {
      * @param axialTolerance the tolerance in inches
      * @return this instance for chaining
      */
-    public P2PFollowerConstants setAxialTolerance(Distance axialTolerance) {
+    public P2PFollowerConstants setAxialTolerance(Dist axialTolerance) {
         this.axialController.setTolerance(axialTolerance);
         return this;
     }
@@ -87,7 +87,7 @@ public class P2PFollowerConstants extends FollowerConstants {
      * @param strafeTolerance the tolerance in inches
      * @return this instance for chaining
      */
-    public P2PFollowerConstants setStrafeTolerance(Distance strafeTolerance) {
+    public P2PFollowerConstants setStrafeTolerance(Dist strafeTolerance) {
         this.strafeController.setTolerance(strafeTolerance);
         return this;
     }
