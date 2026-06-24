@@ -1,11 +1,9 @@
-package org.firstinspires.ftc.teamcode.tests;
+package org.firstinspires.ftc.teamcode.apexpathing;
 
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 
-import org.firstinspires.ftc.teamcode.Constants;
-
-import followers.P2PFollower;
+import core.Follower;
 import geometry.Pose;
 
 /**
@@ -16,10 +14,10 @@ import geometry.Pose;
  */
 @TeleOp(name = "Apex TeleOp Test", group = "Apex Pathing Tests")
 public class TeleOpTest extends LinearOpMode {
-
+    Constants constants = new Constants();
     @Override
     public void runOpMode() {
-        P2PFollower follower = (P2PFollower) new Constants().build(hardwareMap, Pose.zero());
+        Follower follower = new Follower(constants, hardwareMap);
 
         telemetry.addData("Status", "Initialized");
         telemetry.update();
@@ -33,7 +31,7 @@ public class TeleOpTest extends LinearOpMode {
                 follower.stop();
                 telemetry.addLine("Follower stopped");
             } else {
-                follower.drive(
+                follower.teleOpDrive(
                         -gamepad1.left_stick_y,
                         -gamepad1.left_stick_x,
                         -gamepad1.right_stick_x,
