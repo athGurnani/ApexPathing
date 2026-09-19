@@ -2,225 +2,185 @@ package paths.builders;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.function.Function;
 
-import paths.movements.Path;
-import paths.callbacks.Callback;
-import geometry.BSpline;
-import geometry.PathSegment;
-import paths.heading.HeadingInterpolator;
-import paths.heading.InterpolationStyle;
 import geometry.Angle;
-import geometry.Vector;
 import geometry.ArcPose;
+import geometry.Dist;
 import geometry.Pose;
+import geometry.Vector;
+import paths.constraint.PathConstraint;
+import paths.heading.InterpolationStyle;
+import paths.movements.Path;
 
 /**
- * A builder class designed to construct a {@link Path} fluently.
- * This class captures path configurations (waypoints, interpolators, callbacks)
- * in any order and defers geometric compilation until {@link #build()} is called.
- * C2 (tangent and acceleration) continuity is guaranteed in this builder.
- * @author Sohum Arora 22985 Paraducks
- * @author DrPixelCat
+ * Provides shared functionality and structure for building paths for all drivetrain types.
+ *
+ * @author DrPixelCat - 7842 alum
+ * @author Dylan B. - 18597 RoboClovers - Delta
  */
-public class PathBuilder {
-    public Path path;
+public abstract class PathBuilder<T extends PathBuilder<T>> {
+    protected Path path;
+    protected InterpolationStyle style = InterpolationStyle.TANGENT_FORWARD;
 
-    private Pose expectedEndPose;
-    private Pose[] rawPoses = null;
+    final Pose[] rawPoses;
+    final List<Runnable> buildTasks = new ArrayList<Runnable>();
 
-    private InterpolationStyle currentStyle = InterpolationStyle.SMOOTH_START_TO_END;
-    private Angle customOffset = null;
-    private Function<Double, Angle> customFunction = null;
-
-    private final List<Runnable> buildTasks = new ArrayList<>();
-
-    protected PathBuilder(Pose... poses) {
-        this.path = new Path();
+    /**
+     * Creates a new PathBuilder using the provided poses.
+     *
+     * @param type The type of the path to be built.
+     * @param poses A sequence of Pose objects defining the path. Must contain at least two poses.
+     *              Endpoints cannot be ArcPoses.
+     */
+    public PathBuilder(Path.PathType type, Pose... poses) {
+        this.rawPoses = poses;
+        this.path = new Path(type);
         if (poses.length < 2) {
             throw new IllegalArgumentException("A B-Spline must be created with > 1 points!");
         }
         if (poses[0] instanceof ArcPose || poses[poses.length - 1] instanceof ArcPose) {
             throw new IllegalArgumentException("Endpoints can't be arcs!");
         }
-        this.rawPoses = poses;
-        this.startPose = poses[0];
-        this.expectedEndPose = poses[poses.length - 1];
     }
 
-    private final Pose startPose;
+    /**
+     * Adds a kinematic constraint to the path at a specific distance percentage.
+     *
+     * <p><strong> NOTE: Only velocity can be limited on a quickBuild.</strong>
+     *
+     * @param constraint The {@link PathConstraint} to be added to the path
+     * @return The current PathBuilder instance for method chaining.
+     */
+    @SuppressWarnings("unchecked")
+    public T addConstraint(PathConstraint constraint) {
+        if (constraint.getS() >= 1.0 || constraint.getS() < 0.0) {
+            constraint.setS(Math.min(Math.max(constraint.getS(), 0.0), 0.9));
+            path.addWarning("s must be within [0, 1) bounds! Normalized to " + constraint.getS() +
+                    " for safety.");
+        }
+        path.addConstraint(constraint);
+        return (T) this;
+    }
 
     /**
-     * Overrides the default (SMOOTH_START_TO_END) interpolation with a different {@link InterpolationStyle}
+     * Overrides the default (SMOOTH_START_TO_END for holonomic, TANGENT_FORWARD for tank)
+     * interpolation with a different {@link InterpolationStyle}. If a non-tangent interpolation
+     * style is used for a tank drivetrain, an {@link IllegalArgumentException} will be thrown.
      *
      * @param style The interpolation style to apply.
      * @return The current PathBuilder instance for method chaining.
      */
-    public PathBuilder interpolateWith(InterpolationStyle style) {
-        this.currentStyle = style;
-        return this;
-    }
+    public abstract T interpolateWith(InterpolationStyle style);
 
     /**
-     * Overrides the interpolation style, providing a custom angular offset.
-     * Used primarily for {@link InterpolationStyle#TANGENT_CUSTOM}.
+     * Overrides the interpolation style, providing a custom angular offset. Used primarily for
+     * {@link InterpolationStyle#TANGENT_CUSTOM}. This method is only available for holonomic
+     * drivetrains.
      *
      * @param style The interpolation style to apply.
      * @param angleOffset The fixed angle to offset the calculation by.
-     * @return The current PathBuilder instance for method chaining.
+     * @return The current HolonomicPathBuilder instance for method chaining.
      */
-    public PathBuilder interpolateWith(InterpolationStyle style, Angle angleOffset) {
-        this.currentStyle = style;
-        this.customOffset = angleOffset;
-        return this;
+    public HolonomicPathBuilder interpolateWith(InterpolationStyle style, Angle angleOffset) {
+        throw new UnsupportedOperationException(
+                "This method is only available for holonomic drivetrains!"
+        ); // The HolonomicPathBuilder overrides this method.
     }
 
     /**
-     * Overrides the default interpolation with a custom function of distance percentage (s).
+     * Overrides the interpolation style, providing a fixed field point to face. Used primarily for
+     * {@link InterpolationStyle#FACING_POINT}. This method is only available for holonomic
+     * drivetrains.
      *
-     * @param function A lambda mapping distance percentage [0.0, 1.0] to a target Angle.
-     * @return The current PathBuilder instance for method chaining.
+     * @param style The interpolation style to apply.
+     * @param pointToFace The field coordinate the robot should face.
+     * @return The current HolonomicPathBuilder instance for method chaining.
      */
-    public PathBuilder interpolateWith(Function<Double, Angle> function) {
-        this.currentStyle = InterpolationStyle.CUSTOM_DIST_FUNCTION;
-        this.customFunction = function;
-        return this;
+    public HolonomicPathBuilder interpolateWith(InterpolationStyle style, Vector pointToFace) {
+        throw new UnsupportedOperationException(
+                "This method is only available for holonomic drivetrains!"
+        ); // The HolonomicPathBuilder overrides this method.
+    }
+
+    /**
+     * Overrides the interpolation style, providing a fixed field point and angular offset. Used
+     * primarily for {@link InterpolationStyle#FACING_POINT}. This method is only available for
+     * holonomic drivetrains.
+     *
+     * @param style The interpolation style to apply.
+     * @param pointToFace The field coordinate the robot should face.
+     * @param angleOffset The fixed angle to offset the facing direction by.
+     * @return The current HolonomicPathBuilder instance for method chaining.
+     */
+    public HolonomicPathBuilder interpolateWith(InterpolationStyle style, Vector pointToFace,
+                                                Angle angleOffset) {
+        throw new UnsupportedOperationException(
+                "This method is only available for holonomic drivetrains!"
+        ); // The HolonomicPathBuilder overrides this method.
+    }
+
+    /**
+     * Adds a heading node for NODE_BASED interpolation. Automatically sets the interpolation style
+     * to NODE_BASED. This method is only available for holonomic drivetrains.
+     *
+     * @param pct The distance percentage [0.0, 1.0].
+     * @param target The target Angle at this point.
+     * @return The current HolonomicPathBuilder instance for method chaining.
+     */
+    public HolonomicPathBuilder addHeadingNode(double pct, Angle target) {
+        throw new UnsupportedOperationException(
+                "This method is only available for holonomic drivetrains!"
+        ); // The HolonomicPathBuilder overrides this method.
+    }
+
+    /**
+     * Sets how far from the end of the path the robot should start rotating to face its final
+     * target direction. This method is only available for holonomic drivetrains.
+     *
+     * @param distanceFromEnd The distance away from the end of the path.
+     * @return The current HolonomicPathBuilder instance for method chaining.
+     */
+    public HolonomicPathBuilder setDistanceToStartFinalTurn(Dist distanceFromEnd) {
+        throw new UnsupportedOperationException(
+                "This method is only available for holonomic drivetrains!"
+        ); // The HolonomicPathBuilder overrides this method.
     }
 
     /**
      * Attaches an executable callback based on the physical distance percentage.
      *
      * @param s The physical distance percentage [0.0, 1.0].
-     * @param action The code to execute.
+     * @param action The method to execute when the robot reaches the specified distance.
      * @return The current PathBuilder instance for method chaining.
      */
-    public PathBuilder addDistanceCallback(double s, Runnable action) {
-        buildTasks.add(() -> {
-            path.addCallback(new Callback(s, action));
-        });
-        return this;
+    @SuppressWarnings("unchecked")
+    public T addDistanceCallback(double s, Runnable action) {
+        this.buildTasks.add(() -> path.addDistanceCallback(s, action));
+        return (T) this; // Safe cast because T is always a subclass of PathBuilder
     }
 
     /**
      * Attaches an executable callback based on the robot reaching a target heading.
      *
      * @param angle The Angle at which the callback should trigger.
-     * @param action The code to execute.
+     * @param action The method to execute when the robot reaches the specified heading.
      * @return The current PathBuilder instance for method chaining.
      */
-    public PathBuilder addAngularCallback(Angle angle, Runnable action) {
-        buildTasks.add(() -> {
-            if (currentStyle == InterpolationStyle.SMOOTH_START_TO_END) {
-                Angle startRad = rawPoses[0].getHeading();
-                Angle endRad = expectedEndPose.getHeading();
-
-                if (Double.isFinite(startRad.getRad()) && Double.isFinite(endRad.getRad())) {
-                    double totalDiff = startRad.getShortestAngleTo(endRad).getRad();
-                    double targetDiff = startRad.getShortestAngleTo(angle).getRad();
-
-                    if (Math.abs(totalDiff) < 1e-6) {
-                        if (Math.abs(targetDiff) > 1e-6) {
-                            throw new IllegalArgumentException("Angular callback out of bounds: The path's target heading is constant.");
-                        }
-                    } else if ((totalDiff * targetDiff < 0) || (Math.abs(targetDiff) > Math.abs(totalDiff))) {
-                        throw new IllegalArgumentException("Angular callback is outside the sweep range of the start and end headings.");
-                    }
-                }
-            }
-            path.addCallback(new Callback(angle, action));
-        });
-        return this;
-    }
+    public abstract T addAngularCallback(Angle angle, Runnable action);
 
     /**
-     * Compiles all configuration data, calculates new ctrl points from {@link ArcPose}, generates the curve,
-     * verifies callback safety, and returns the completed executable Path.
+     * Builds the path geometry without generating a physical motion profile. The follower will
+     * automatically use dynamic velocity-bounded feedback.
      *
-     * @return The fully constructed {@link Path} object ready for execution.
+     * @return The constructed Path.
      */
-    public Path build() {
-        ArrayList<Pose> processedPoses = new ArrayList<>(rawPoses.length * 2);
-        processedPoses.add(rawPoses[0]);
+    public abstract Path quickBuild();
 
-        boolean intermediateWarningSent = false;
-
-        for (int i = 1; i < rawPoses.length - 1; i++) {
-            Pose currentPose = rawPoses[i];
-
-            if (!intermediateWarningSent && Double.isFinite(currentPose.getHeading().getRad())) {
-                path.addWarning("APEX WARNING: Intermediate B-Spline headings are currently ignored! Only the " +
-                        "final pose heading controls the end heading.");
-                intermediateWarningSent = true;
-            }
-
-            if (currentPose instanceof ArcPose) {
-                ArcPose arcPose = (ArcPose) currentPose;
-                double radius = arcPose.getRadius().getIn();
-
-                if (radius < 2.0) {
-                    throw new IllegalArgumentException("ArcPose radius must be at least 2.0 inches.");
-                }
-
-                Pose prevPose = rawPoses[i - 1];
-                Pose nextPose = rawPoses[i + 1];
-
-                Vector vecToLast = prevPose.getPos().minus(arcPose.getPos());
-                Vector vecToNext = nextPose.getPos().minus(arcPose.getPos());
-
-                double distToLast = vecToLast.getMag().getIn();
-                double distToNext = vecToNext.getMag().getIn();
-
-                if (radius > distToLast) {
-                    throw new IllegalArgumentException("ArcPose radius (" + radius + ") exceeds distance to the last control point.");
-                } else if (radius > distToNext) {
-                    throw new IllegalArgumentException("ArcPose radius (" + radius + ") exceeds distance to the next control point.");
-                }
-
-                Vector p1Vec = arcPose.getPos().plus(vecToLast.times(radius / distToLast));
-                Vector p2Vec = arcPose.getPos().plus(vecToNext.times(radius / distToNext));
-
-                processedPoses.add(new Pose(p1Vec, arcPose.getHeading()));
-                processedPoses.add(currentPose);
-                processedPoses.add(new Pose(p2Vec, arcPose.getHeading()));
-
-            } else {
-                processedPoses.add(currentPose);
-            }
-        }
-
-        processedPoses.add(rawPoses[rawPoses.length - 1]);
-
-        Vector[] vectors = new Vector[processedPoses.size()];
-        for (int i = 0; i < processedPoses.size(); i++) {
-            vectors[i] = processedPoses.get(i).getPos();
-        }
-
-        PathSegment curve = new PathSegment(new BSpline(vectors));
-        path.setParametricPath(curve);
-
-        Angle startH = startPose.getHeading();
-        Angle endH = expectedEndPose.getHeading();
-
-        boolean missingParams =
-                (currentStyle == InterpolationStyle.CONSTANT_START_HEADING && !Double.isFinite(startH.getRad())) ||
-                        (currentStyle == InterpolationStyle.CONSTANT_END_HEADING && !Double.isFinite(endH.getRad())) ||
-                        (currentStyle == InterpolationStyle.TANGENT_CUSTOM && (customOffset == null || !Double.isFinite(customOffset.getRad()))) ||
-                        (currentStyle == InterpolationStyle.SMOOTH_START_TO_END && (!Double.isFinite(startH.getRad()) || !Double.isFinite(endH.getRad()))) ||
-                        (currentStyle == InterpolationStyle.CUSTOM_DIST_FUNCTION && customFunction == null);
-
-        if (missingParams) {
-            path.addWarning("APEX WARNING: " + currentStyle.name() + " is missing required parameters! Falling back to TANGENT_FORWARD.");
-            currentStyle = InterpolationStyle.TANGENT_FORWARD;
-        }
-
-        path.setInterpolator(new HeadingInterpolator(currentStyle, startH, endH, customOffset));
-        path.setEndPose(expectedEndPose);
-
-        for (Runnable task : buildTasks) {
-            task.run();
-        }
-
-        return path;
-    }
-
+    /**
+     * Builds the path geometry and solves a complete kinematically constrained feedforward
+     * motion profile.
+     *
+     * @return The constructed Path with a fully optimized Feedforward LUT attached.
+     */
+    public abstract Path profiledBuild();
 }

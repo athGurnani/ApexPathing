@@ -1,618 +1,318 @@
 package org.firstinspires.ftc.teamcode.apexpathing;
 
-import com.bylazar.configurables.annotations.Configurable;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
-import com.qualcomm.robotcore.util.ElapsedTime;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import java.util.function.Predicate;
 
-import core.ApexConfig;
 import core.Follower;
+import core.ApexConstants;
 import core.FollowerConstants;
-import controllers.PDSController.PDSCoefficients;
-import drivetrains.BaseDrivetrainConfig;
-import localizers.BaseLocalizerConfig;
 import geometry.Angle;
 import geometry.Dist;
 import geometry.Pose;
 import geometry.Vector;
-import paths.builders.Builder;
-import paths.movements.Path;
-import util.DistUnit;
+import tuning.follower.phases.CentripetalPhase;
+import tuning.follower.phases.AccelerationFeedforwardPhase;
+import tuning.follower.phases.DrivePhase;
+import tuning.follower.phases.FeedforwardTuner;
+import tuning.follower.phases.HeadingPhase;
+import tuning.follower.phases.LimitsPhase;
+import tuning.follower.TunerContext;
+import tuning.follower.TuningPhase;
+import tuning.follower.phases.VelocityFeedbackPhase;
 
 /**
- * Single unified automatic tuner capable of completely tuning a robot for Apex in minutes in just a single OpMode!
- * All you have to do is follow the telemetry instructions and press a couple buttons here and there
- * Once you have run this tuner, your robot is fully tuned and ready to go Path its way to the Peaks
- * @author Sohum Arora 22985 Paraducks
+ * This OpMode is used to tune the Apex Pathing Follower. It allows the user to select a tuning
+ * phase at which to begin, then runs each remaining phase in order and saves after every phase.
+ *
+ * @author Sohum Arora - 22985 Paraducks
+ * @author Dylan B. - 18597 RoboClovers - Delta
  */
-@Configurable
-@TeleOp(name = "Follower Tuner", group = "Apex Pathing Tuning")
+@TeleOp(name = "Follower Tuner", group = "Apex Pathing")
 public class FollowerTuner extends LinearOpMode {
+    /** Allows the desktop simulator to exercise phases without saved prerequisite constants. */
+    public static final String UNLOCK_PHASES_PROPERTY = "apex.simulation.unlockTunerPhases";
 
-    public static double kSGuess = 0.0;
+    /**
+     * Completion is determined by whether the last saved value of the phase's constants is non-zero
+     * Tuners are ran in the order of the enum ordinals
+     */
+    enum Phase {
+        FEEDFORWARD(FeedforwardTuner::new, constants ->
+                constants.angularKV > 0.0 && constants.translationalKV > 0.0 &&
+                        constants.angularFeedforwardKS >= 0.0 &&
+                        constants.translationalFeedforwardKS >= 0.0),
+        HEADING(HeadingPhase::new, constants ->
+                constants.angularCoeffs.kP != 0.0),
+        DRIVE(DrivePhase::new, constants ->
+                constants.translationalCoeffs.kP != 0.0),
+        LIMITS(LimitsPhase::new, constants ->
+                constants.forwardVelLimitIn != 0.0 &&
+                        constants.forwardAccelLimitIn != 0.0 &&
+                        (!constants.requiresStrafeLimits() || (constants.strafeVelLimitIn != 0.0 &&
+                        constants.strafeAccelLimitIn != 0.0)) &&
+                        constants.angularVelLimitRad != 0.0 &&
+                        constants.angularAccelLimitRad != 0.0),
+        ACCELERATION_FEEDFORWARD(AccelerationFeedforwardPhase::new, constants ->
+                constants.translationalKA > 0.0 && constants.angularKA > 0.0),
+        CENTRIPETAL(CentripetalPhase::new, constants ->
+                constants.kCentripetal != 0.0),
+        VELOCITY_FEEDBACK(VelocityFeedbackPhase::new, constants ->
+                velocityFeedbackTuned(
+                        constants.velocityFeedbackGain,
+                        constants.angularVelocityFeedbackGain));
 
-    enum TuningState {
-        AWAIT_CONFIRM,
-        KS_SEARCH,
-        STEP_RESPONSE,
-        VELOCITY_FF,
-        LATERAL_ACCEL,
-        LATERAL_ACCEL_TEST,
-        CONFIRM,
-        SAVE
+        final Function<TunerContext, TuningPhase> phaseFactory;
+        final Predicate<FollowerConstants> isTunedPredicate;
+        boolean tuned;
+
+        Phase(Function<TunerContext, TuningPhase> phaseFactory,
+              Predicate<FollowerConstants> isTunedPredicate) {
+            this.phaseFactory = phaseFactory;
+            this.isTunedPredicate = isTunedPredicate;
+        }
+
+        TuningPhase create(TunerContext context) {
+            return phaseFactory.apply(context);
+        }
+
+        void updateTunedStatus(FollowerConstants constants) {
+            tuned = isTunedPredicate.test(constants);
+        }
     }
 
-    enum TuningPhase {
-        HEADING,
-        TRANSLATION,
-        VELOCITY_FF,
-        LATERAL_ACCEL,
-        COMPLETE
-    }
+    private static final Phase[] phases = Phase.values();
+    private static final int phaseAmount = phases.length;
 
-    enum TuningMode {
-        AUTO,
-        MANUAL
-    }
-
-    private TuningPhase phase = TuningPhase.HEADING;
-    private TuningState state = TuningState.AWAIT_CONFIRM;
-    private TuningMode mode = TuningMode.AUTO;
-
-    private double headingP, headingD, headingS;
-    private double translationP, translationD, translationS;
-    private double velocityFF;
-    private double maxLateralAccel = 40.0;
-    private double headingToleranceDeg, distanceToleranceIn, tTolerance;
-
-    private double ksMax = 0.2, ksMin = 0.0, ksGuess = 0.0, ksLastGuess = -1.0, ksMaxDeviation;
-    private double stepMaxAccel, stepMaxVel, stepLastVel, stepLastTime, stepStartTime, stepTimeStamp, stepVelAtTimeStamp;
-    private double accelMaxError;
-    private boolean driftDetected;
-    private boolean readyToRerun = false;
-
-    private final ElapsedTime timer = new ElapsedTime();
-    private final Constants baseConstants = new Constants();
-    private final FollowerConstants followerConstants = new FollowerConstants();
-    private Follower follower;
-
-    private boolean lastA = false, lastB = false, lastY = false;
-    private boolean isPaused = false;
+    private TunerContext context;
+    private Phase selectedPhaseOrdinal;
+    private TuningPhase phase;
+    private boolean isPhaseSelected = false;
 
     @Override
-    public void runOpMode() throws InterruptedException {
-        FollowerConstants defaults = baseConstants.followerConfig().getConstants();
-        headingP = defaults.headingCoeffs.kP;
-        headingD = defaults.headingCoeffs.kD;
-        headingS = defaults.headingCoeffs.kS;
-        translationP = defaults.driveCoeffs.kP;
-        translationD = defaults.driveCoeffs.kD;
-        translationS = defaults.driveCoeffs.kS;
-        velocityFF = defaults.lateralKV;
-        headingToleranceDeg = defaults.headingTolerance.getDeg();
-        distanceToleranceIn = defaults.distanceTolerance.getIn();
-        tTolerance = defaults.tTolerance;
-        maxLateralAccel = defaults.maxLateralAccel > 10 ? defaults.maxLateralAccel : 40.0;
+    public void runOpMode() {
+        resetPhaseSelection();
+        context = new TunerContext(this);
+        context.setFollower(new Follower(createConstants(), hardwareMap, true));
+        context.constants.drivetrainType = context.getFollower().getDrivetrain().getDrivetrainType();
 
-        boolean headingRun = defaults.headingCoeffs.kP != 0.0 || defaults.headingCoeffs.kD != 0.0 || defaults.headingCoeffs.kS != 0.0;
-        boolean translationRun = defaults.driveCoeffs.kP != 0.0 || defaults.driveCoeffs.kD != 0.0 || defaults.driveCoeffs.kS != 0.0;
-        boolean velocityFFRun = defaults.lateralKV != 0.0;
-        boolean accelRun = defaults.maxLateralAccel > 10.0;
+        for (Phase phase : phases) { phase.updateTunedStatus(context.constants); }
+        selectFirstIncompletePhase();
 
-        while (opModeInInit()) {
-            telemetry.addLine("Robot Initialized");
-            telemetry.addLine("Tuning order:\n 1) Heading PDS \n 2) Translation PDS \n 3) Velocity FF \n 4) Max Lateral Accel");
-            telemetry.addLine("Run the OpMode to proceed with the Heading Tuner");
-
-            if (headingRun) telemetry.addLine("Heading tuner has already been run and values have been saved");
-            if (translationRun) telemetry.addLine("Translation tuner has already been run and values have been saved");
-            if (velocityFFRun) telemetry.addLine("Velocity FF tuner has already been run and values have been saved");
-            if (accelRun) telemetry.addLine("Max Lateral Accel tuner has already been run and values have been saved");
-
-            telemetry.addLine("A - Run the Translation Tuner if Heading Tuner has been run. ");
-            telemetry.addLine("B - Run the Velocity FF Tuner if Heading & Translation tuners have been run. ");
-            telemetry.addLine("Once all 3 complete, press A to run Max Lateral Accel Tuner. ");
-            telemetry.addLine("WARNING: Do NOT run the tuners out of order");
-
-            if (gamepad1.a) {
-                phase = TuningPhase.TRANSLATION;
-            } else if (gamepad1.b) {
-                phase = TuningPhase.VELOCITY_FF;
-            }
-
-            telemetry.addData("Selected Phase", phase);
-            telemetry.update();
+        while (opModeInInit() && !isPhaseSelected) {
+            context.updateDebugMode(true);
+            isPhaseSelected = phaseSelector();
+            sleep(20);
         }
 
-        updateFollowerConfig();
-        follower = new Follower(customConfig, hardwareMap);
+        while (opModeInInit() && isPhaseSelected) {
+            context.updateDebugMode(false);
+            telemetry.clearAll();
+            context.addInterfaceHeader();
+            telemetry.addLine("Press Start to run the tuner.");
+            telemetry.addLine("Make sure the robot has enough space.");
+            telemetry.update();
+            sleep(20);
+        }
 
-        waitForStart();
-        lastA = false;
-        lastB = false;
-        lastY = false;
-
-        while (opModeIsActive() && phase != TuningPhase.COMPLETE && !isStopRequested()) {
-
-            if (gamepad1.y && !lastY) {
-                isPaused = !isPaused;
-                if (!isPaused && state == TuningState.STEP_RESPONSE) {
-                    stepLastTime = System.nanoTime();
-                    timer.reset();
-                }
+        // Starting the OpMode must never silently accept a highlighted option. If Start was
+        // pressed before a phase was selected, keep presenting the same menu while RUNNING until
+        // the user explicitly confirms a phase.
+        while (opModeIsActive() && !isPhaseSelected) {
+            context.updateDebugMode(true);
+            isPhaseSelected = phaseSelector();
+            if (!isPhaseSelected) {
+                context.getFollower().update();
+                context.getFollower().manual(gamepad1);
             }
-            if (isPaused && (state == TuningState.KS_SEARCH || state == TuningState.STEP_RESPONSE ||
-                    state == TuningState.VELOCITY_FF || state == TuningState.LATERAL_ACCEL ||
-                    state == TuningState.LATERAL_ACCEL_TEST)) {
+            sleep(20);
+        }
+        if (!opModeIsActive()) {
+            context.getFollower().stop();
+            resetPhaseSelection();
+            return;
+        }
 
-                follower.teleOpDrive(0, 0, 0);
-                telemetry.addLine("Tuner Paused, Y to resume.");
+        // temp set pose for dev testing
+        context.getFollower().setPose(new Pose(new Vector(
+                Dist.fromIn(-60), Dist.fromIn(-60)), Angle.fromDeg(45))
+        );
+        while (opModeIsActive()) {
+            if (phase.run(this)) { // Returns true if the phase is complete
+                if (!saveCurrentProfile()) { break; }
+                selectedPhaseOrdinal.updateTunedStatus(context.constants);
 
-                lastA = gamepad1.a;
-                lastB = gamepad1.b;
-                lastY = gamepad1.y;
-
-                telemetry.update();
-                continue;
-            }
-
-            switch (phase) {
-                case HEADING:
-                case TRANSLATION: {
-                    boolean isAngular = phase == TuningPhase.HEADING;
-
-                    switch (state) {
-                        case AWAIT_CONFIRM:
-                            telemetry.addLine(phase + " phase initialized");
-                            telemetry.addLine("A - Toggle mode");
-                            telemetry.addLine("B - Start tuning");
-                            telemetry.addData("Selected Mode", mode);
-
-                            if (gamepad1.a && !lastA) {
-                                mode = (mode == TuningMode.AUTO) ? TuningMode.MANUAL : TuningMode.AUTO;
-                            } else if (gamepad1.b && !lastB) {
-                                if (mode == TuningMode.AUTO) {
-                                    resetKsSearch();
-                                    isPaused = false;
-                                    state = TuningState.KS_SEARCH;
-                                } else {
-                                    kSGuess = isAngular ? headingS : translationS;
-                                    readyToRerun = false;
-                                    state = TuningState.CONFIRM;
-                                }
-                            }
-                            break;
-
-                        case KS_SEARCH:
-                            if (Math.abs(ksLastGuess - ksGuess) <= 0.01) {
-                                if (isAngular) headingS = ksGuess;
-                                else translationS = ksGuess;
-                                resetStepResponse();
-                                state = TuningState.STEP_RESPONSE;
-                                break;
-                            }
-
-                            follower.setPose(new Pose(new Vector(Dist.of(0, DistUnit.IN), Dist.of(0, DistUnit.IN)), Angle.fromDeg(0)));
-                            follower.update();
-                            ksGuess = (ksMax + ksMin) / 2.0;
-                            ksMaxDeviation = 0.0;
-                            timer.reset();
-
-                            while (opModeIsActive() && timer.time(TimeUnit.MILLISECONDS) < 500) {
-                                follower.update();
-                                double pos = isAngular
-                                        ? follower.getPose().getHeading().getRad()
-                                        : follower.getPose().getPos().getX().getIn();
-                                ksMaxDeviation = Math.max(Math.abs(pos), ksMaxDeviation);
-                                if (isAngular) follower.teleOpDrive(0, 0, ksGuess);
-                                else follower.teleOpDrive(ksGuess, 0, 0);
-                            }
-
-                            if (ksMaxDeviation > 0.025) ksMax = ksGuess;
-                            else ksMin = ksGuess;
-                            ksLastGuess = ksGuess;
-
-                            follower.teleOpDrive(0, 0, 0);
-                            timer.wait(500);
-                            break;
-
-                        case STEP_RESPONSE:
-                            if (timer.time(TimeUnit.MILLISECONDS) >= 2000) {
-                                follower.teleOpDrive(0, 0, 0);
-                                timer.wait(500);
-
-                                double L = stepTimeStamp - (stepVelAtTimeStamp / stepMaxAccel);
-                                double kP = 1.2 / (L * stepMaxAccel);
-                                double kD = 0.6 / stepMaxAccel;
-
-                                if (isAngular) {
-                                    headingP = kP > 0 ? kP : 0.01;
-                                    headingD = kD > 0 ? kD : 0.001;
-                                } else {
-                                    translationP = Double.isFinite(kP) && kP > 0 ? kP : 0.01;
-                                    translationD = Double.isFinite(kD) && kD > 0 ? kD : 0.001;
-                                }
-
-                                updateFollowerConfig();
-                                readyToRerun = false;
-                                state = TuningState.CONFIRM;
-                                break;
-                            }
-
-                            follower.update();
-                            double curVel = isAngular
-                                    ? follower.getVelocity().getHeading().getRad()
-                                    : follower.getVelocity().getPos().getX().getIn();
-
-                            double now = System.nanoTime();
-                            double deltaT = (now - stepLastTime) / 1e9;
-                            double deltaV = curVel - stepLastVel;
-                            double accel = deltaT > 1e-6 ? deltaV / deltaT : 0.0;
-
-                            if (accel > stepMaxAccel) {
-                                stepMaxAccel = accel;
-                                stepTimeStamp = (now - stepStartTime) / 1e9;
-                                stepVelAtTimeStamp = curVel;
-                            }
-
-                            stepMaxVel = Math.max(curVel, stepMaxVel);
-                            stepLastVel = curVel;
-                            stepLastTime = now;
-
-                            if (isAngular) follower.teleOpDrive(0, 0, 1.0);
-                            else follower.teleOpDrive(1.0, 0, 0);
-                            break;
-
-                        case CONFIRM:
-                            telemetry.addData("Current Phase", phase);
-                            telemetry.addData("Robot Pose", follower.getPose().toString());
-
-                            if (!readyToRerun) {
-                                telemetry.addLine("A - Save and advance");
-                                telemetry.addLine("B - Rerun tuner");
-
-                                if (mode == TuningMode.MANUAL) {
-                                    telemetry.addLine("--- MANUAL TUNING ---");
-                                    telemetry.addLine("Tune kSGuess via Config Panels. Drive to test.");
-                                    if (isAngular) headingS = kSGuess;
-                                    else translationS = kSGuess;
-                                    updateFollowerConfig();
-                                    telemetry.addData("Current kSGuess", kSGuess);
-                                } else {
-                                    if (isAngular) {
-                                        telemetry.addData("Heading P", headingP);
-                                        telemetry.addData("Heading D", headingD);
-                                        telemetry.addData("Heading S", headingS);
-                                    } else {
-                                        telemetry.addData("Translation P", translationP);
-                                        telemetry.addData("Translation D", translationD);
-                                        telemetry.addData("Translation S", translationS);
-                                    }
-                                }
-
-                                if (gamepad1.a && !lastA) {
-                                    phase = isAngular ? TuningPhase.TRANSLATION : TuningPhase.VELOCITY_FF;
-                                    state = TuningState.AWAIT_CONFIRM;
-                                    mode = TuningMode.AUTO;
-                                    resetKsSearch();
-                                } else if (gamepad1.b && !lastB) {
-                                    readyToRerun = true;
-                                }
-                            } else {
-                                telemetry.addLine("A - Toggle mode");
-                                telemetry.addLine("B - Rerun tuner");
-                                telemetry.addData("Selected Mode", mode);
-
-                                if (gamepad1.a && !lastA) {
-                                    mode = (mode == TuningMode.AUTO) ? TuningMode.MANUAL : TuningMode.AUTO;
-                                    if (mode == TuningMode.MANUAL) {
-                                        kSGuess = isAngular ? headingS : translationS;
-                                    }
-                                } else if (gamepad1.b && !lastB) {
-                                    readyToRerun = false;
-                                    if (mode == TuningMode.AUTO) {
-                                        resetKsSearch();
-                                        isPaused = false;
-                                        state = TuningState.KS_SEARCH;
-                                    }
-                                }
-                            }
-
-                            follower.teleOpDrive(-gamepad1.left_stick_x, gamepad1.left_stick_y, -gamepad1.right_stick_x);
-                            break;
-                    }
+                Phase nextPhase = nextPhase(selectedPhaseOrdinal);
+                while (nextPhase != null && !applicable(nextPhase)) { nextPhase = nextPhase(nextPhase); }
+                if (nextPhase == null) {
+                    finishTuningWorkflow();
                     break;
                 }
 
-                case VELOCITY_FF: {
-                    switch (state) {
-                        case AWAIT_CONFIRM:
-                            telemetry.addLine("Phase: VELOCITY_FF initialized");
-                            telemetry.addLine("A - Toggle mode");
-                            telemetry.addLine("B - Start tuning");
-                            telemetry.addData("Selected Mode", mode);
+                context.getFollower().stop();
+                context.getFollower().enableControllers();
+                context.getFollower().setPose(Pose.zero());
+                selectedPhaseOrdinal = nextPhase;
+                selectPhase();
+            }
+        }
 
-                            if (gamepad1.a && !lastA) {
-                                mode = (mode == TuningMode.AUTO) ? TuningMode.MANUAL : TuningMode.AUTO;
-                            } else if (gamepad1.b && !lastB) {
-                                if (mode == TuningMode.AUTO) {
-                                    isPaused = false;
-                                    state = TuningState.VELOCITY_FF;
-                                } else {
-                                    kSGuess = velocityFF;
-                                    readyToRerun = false;
-                                    state = TuningState.CONFIRM;
-                                }
-                            }
-                            break;
+        context.getFollower().stop();
+        resetPhaseSelection();
+    }
 
-                        case VELOCITY_FF:
-                            follower.teleOpDrive(0, 1.0, 0);
-                            timer.wait(1500);
-                            double maxVel = Math.abs(follower.getVelocity().getPos().getX().getIn());
-                            velocityFF = 1.0 / maxVel;
-                            follower.teleOpDrive(0, 0, 0);
-                            timer.wait(500);
-                            updateFollowerConfig();
-                            readyToRerun = false;
-                            state = TuningState.CONFIRM;
-                            break;
+    /** Supplies the robot configuration, allowing simulator-specific tuner OpModes. */
+    protected ApexConstants createConstants() { return new Constants(); }
 
-                        case CONFIRM:
-                            telemetry.addData("Current Phase", phase);
-                            telemetry.addData("Robot Pose", follower.getPose().toString());
+    private boolean saveCurrentProfile() {
+        while (opModeIsActive()) {
+            if (context.saveConstants()) { return true; }
+            context.getFollower().stop();
+            telemetry.addLine("A: retry saving. B: finish without saving these changes.");
+            telemetry.update();
+            while (opModeIsActive()) {
+                if (gamepad1.bWasPressed()) { return false; }
+                if (gamepad1.aWasPressed()) { break; }
+                sleep(20);
+            }
+        }
+        return false;
+    }
 
-                            if (!readyToRerun) {
-                                telemetry.addLine("A - Save and advance");
-                                telemetry.addLine("B - Rerun tuner");
+    /** A reused simulator OpMode instance must always reopen at the phase picker. */
+    private void resetPhaseSelection() {
+        selectedPhaseOrdinal = null;
+        phase = null;
+        isPhaseSelected = false;
+    }
 
-                                if (mode == TuningMode.MANUAL) {
-                                    telemetry.addLine("--- MANUAL TUNING ---");
-                                    telemetry.addLine("Tune kSGuess (kV) via Config Panels. Drive to test.");
-                                    velocityFF = kSGuess;
-                                    updateFollowerConfig();
-                                    telemetry.addData("Current kV", velocityFF);
-                                } else {
-                                    telemetry.addData("Velocity FF (kV)", velocityFF);
-                                }
+    /** Every phase remains selectable; completion state is informational, not a menu lock. */
+    static boolean phaseAvailable(Phase phase) {
+        return true;
+    }
 
-                                if (gamepad1.a && !lastA) {
-                                    phase = TuningPhase.LATERAL_ACCEL;
-                                    state = TuningState.AWAIT_CONFIRM;
-                                    mode = TuningMode.AUTO;
-                                    maxLateralAccel = 50.0;
-                                    driftDetected = false;
-                                } else if (gamepad1.b && !lastB) {
-                                    readyToRerun = true;
-                                }
-                            } else {
-                                telemetry.addLine("A - Toggle mode");
-                                telemetry.addLine("B - Execute rerun");
-                                telemetry.addData("Selected Mode", mode);
+    private boolean applicable(Phase phase) {
+        return phase != Phase.CENTRIPETAL || context.getFollower().getDrivetrain().isHolonomic();
+    }
 
-                                if (gamepad1.a && !lastA) {
-                                    mode = (mode == TuningMode.AUTO) ? TuningMode.MANUAL : TuningMode.AUTO;
-                                    if (mode == TuningMode.MANUAL) kSGuess = velocityFF;
-                                } else if (gamepad1.b && !lastB) {
-                                    readyToRerun = false;
-                                    if (mode == TuningMode.AUTO) {
-                                        isPaused = false;
-                                        state = TuningState.VELOCITY_FF;
-                                    }
-                                }
-                            }
+    private String phaseStatus(Phase phase) {
+        if (!applicable(phase)) { return "[N/A]"; }
+        if (phase.tuned) { return "[DONE]"; }
+        return phaseAvailable(phase) ? "[READY]" : "[LOCKED]";
+    }
 
-                            follower.teleOpDrive(-gamepad1.left_stick_x, gamepad1.left_stick_y, -gamepad1.right_stick_x);
-                            break;
-                    }
-                    break;
-                }
+    private void selectFirstIncompletePhase() {
+        selectedPhaseOrdinal = phases[0];
+        for (int i = 0; i < phaseAmount; i++) {
+            if (!phases[i].tuned && phaseAvailable(phases[i]) && applicable(phases[i])) {
+                selectedPhaseOrdinal = phases[i];
+                return;
+            }
+        }
+    }
 
-                case LATERAL_ACCEL: {
-                    switch (state) {
-                        case AWAIT_CONFIRM:
-                            telemetry.addLine("Phase: LATERAL_ACCEL initialized");
-                            telemetry.addLine("A - Toggle mode");
-                            telemetry.addLine("B - Start tuning");
-                            telemetry.addData("Selected Mode", mode);
-
-                            if (gamepad1.a && !lastA) {
-                                mode = (mode == TuningMode.AUTO) ? TuningMode.MANUAL : TuningMode.AUTO;
-                            } else if (gamepad1.b && !lastB) {
-                                if (mode == TuningMode.AUTO) {
-                                    isPaused = false;
-                                    state = TuningState.LATERAL_ACCEL;
-                                } else {
-                                    kSGuess = maxLateralAccel;
-                                    readyToRerun = false;
-                                    state = TuningState.CONFIRM;
-                                }
-                            }
-                            break;
-
-                        case LATERAL_ACCEL:
-                            if (driftDetected || maxLateralAccel > 300) {
-                                if (!driftDetected) maxLateralAccel -= 20.0;
-                                updateFollowerConfig();
-                                readyToRerun = false;
-                                state = TuningState.CONFIRM;
-                                break;
-                            }
-
-                            updateFollowerConfig();
-                            follower.setPose(new Pose(new Vector(Dist.of(0, DistUnit.IN), Dist.of(0, DistUnit.IN)), Angle.fromDeg(0)));
-
-                            Pose start = follower.getPose();
-                            Path testCurve = Builder.path(
-                                    start,
-                                    new Pose(start.getPos().plus(new Vector(Dist.of(30, DistUnit.IN), Dist.of(0, DistUnit.IN))), start.getHeading()),
-                                    new Pose(start.getPos().plus(new Vector(Dist.of(30, DistUnit.IN), Dist.of(30, DistUnit.IN))), start.getHeading().plus(Angle.fromDeg(90))),
-                                    new Pose(start.getPos().plus(new Vector(Dist.of(0, DistUnit.IN), Dist.of(30, DistUnit.IN))), start.getHeading().plus(Angle.fromDeg(180)))
-                            ).build();
-
-                            follower.follow(testCurve);
-                            accelMaxError = 0;
-                            state = TuningState.LATERAL_ACCEL_TEST;
-                            break;
-
-                        case LATERAL_ACCEL_TEST:
-                            follower.update();
-                            double err = follower.getPose().getPos().getMag().getIn();
-                            if (err > accelMaxError) accelMaxError = err;
-
-                            if (!follower.isBusy()) {
-                                if (accelMaxError > 4.0) {
-                                    driftDetected = true;
-                                    maxLateralAccel -= 20.0;
-                                } else {
-                                    maxLateralAccel += 20.0;
-                                    timer.wait(1000);
-                                }
-                                state = TuningState.LATERAL_ACCEL;
-                            }
-                            break;
-
-                        case CONFIRM:
-                            telemetry.addData("Current Phase", phase);
-                            telemetry.addData("Robot Pose", follower.getPose().toString());
-
-                            if (!readyToRerun) {
-                                telemetry.addLine("Press 'A' (cross) to SAVE and finish.");
-                                telemetry.addLine("Press 'B' (circle) to RERUN or ADJUST.");
-
-                                if (mode == TuningMode.MANUAL) {
-                                    telemetry.addLine("--- MANUAL TUNING ---");
-                                    telemetry.addLine("Tune kSGuess (Max Lateral Accel) via Config Panels. Drive to test.");
-                                    maxLateralAccel = kSGuess;
-                                    updateFollowerConfig();
-                                    telemetry.addData("Current Max Lateral Accel", maxLateralAccel);
-                                } else {
-                                    telemetry.addData("Max Lateral Accel", maxLateralAccel);
-                                }
-
-                                if (gamepad1.a && !lastA) {
-                                    state = TuningState.SAVE;
-                                } else if (gamepad1.b && !lastB) {
-                                    readyToRerun = true;
-                                }
-                            } else {
-                                telemetry.addLine("A - Toggle mode");
-                                telemetry.addLine("B - Execute Rerun");
-                                telemetry.addData("Selected Mode", mode);
-
-                                if (gamepad1.a && !lastA) {
-                                    mode = (mode == TuningMode.AUTO) ? TuningMode.MANUAL : TuningMode.AUTO;
-                                    if (mode == TuningMode.MANUAL) kSGuess = maxLateralAccel;
-                                } else if (gamepad1.b && !lastB) {
-                                    readyToRerun = false;
-                                    if (mode == TuningMode.AUTO) {
-                                        driftDetected = false;
-                                        isPaused = false;
-                                        state = TuningState.LATERAL_ACCEL;
-                                    }
-                                }
-                            }
-
-                            follower.teleOpDrive(-gamepad1.left_stick_x, gamepad1.left_stick_y, -gamepad1.right_stick_x);
-                            break;
-
-                        case SAVE:
-                            saveConstantsToJson();
-                            phase = TuningPhase.COMPLETE;
-                            break;
-                    }
-                    break;
+    private boolean phaseSelector() {
+        telemetry.clearAll();
+        context.addInterfaceHeader();
+        if (context.getFollower().getDrivetrain() instanceof drivetrains.DualActuated) {
+            telemetry.addLine("Dpad Left/Right: choose TANK or HOLONOMIC profile.");
+            if (gamepad1.dpadLeftWasPressed() || gamepad1.dpadRightWasPressed()) {
+                context.getFollower().stop();
+                drivetrains.DualActuated drive = (drivetrains.DualActuated) context.getFollower().getDrivetrain();
+                if (drive.isHolonomic()) { drive.activateTractionState(); }
+                else { drive.activateHolonomicState(); }
+                context.getFollower().update(false);
+                for (Phase item : phases) { item.updateTunedStatus(context.constants); }
+                selectFirstIncompletePhase();
+            }
+            if (context.constants.hasUnassignedLegacy()) {
+                telemetry.addLine("Y: assign legacy values to " + context.constants.getActiveProfile());
+                if (gamepad1.yWasPressed()) {
+                    context.constants.assignLegacyToActiveProfile();
+                    context.getFollower().reset();
+                    context.saveConstants();
+                    for (Phase item : phases) { item.updateTunedStatus(context.constants); }
+                    selectFirstIncompletePhase();
                 }
             }
+        }
+        telemetry.addLine("Select a tuning phase");
+        telemetry.addLine("Use Dpad Up and Down to choose a phase, then press A to select it.");
+        telemetry.addLine("Completed phases can be selected again for retuning.");
+        telemetry.addLine();
 
-            lastA = gamepad1.a;
-            lastB = gamepad1.b;
-            lastY = gamepad1.y;
-            telemetry.update();
+        for (int i = 0; i < phaseAmount; i++) {
+            String cursor = i == selectedPhaseOrdinal.ordinal() ? " <" : "";
+            telemetry.addLine(phaseStatus(phases[i]) + " " +
+                    phaseDisplayName(phases[i]) + cursor);
         }
 
-        while (opModeIsActive() && !isStopRequested()) {
-            telemetry.addData("Status", "All Tuning Cycles Complete! Configuration Saved to JSON.");
-            telemetry.update();
-            follower.teleOpDrive(0, 0, 0);
+        telemetry.update();
+
+        if (gamepad1.dpadUpWasPressed()) {
+            selectedPhaseOrdinal = phases[
+                    (selectedPhaseOrdinal.ordinal() - 1 + phaseAmount) % phaseAmount];
+        } else if (gamepad1.dpadDownWasPressed()) {
+            selectedPhaseOrdinal = phases[
+                    (selectedPhaseOrdinal.ordinal() + 1) % phaseAmount];
+        } else if (gamepad1.aWasPressed() && phaseAvailable(selectedPhaseOrdinal) && applicable(selectedPhaseOrdinal)) {
+            selectPhase();
+            return true;
         }
+
+        return false;
     }
 
-    private void resetKsSearch() {
-        ksMax = 0.2;
-        ksMin = 0.0;
-        ksGuess = 0.0;
-        ksLastGuess = -1.0;
-        ksMaxDeviation = 0.0;
+    private void selectPhase() {
+        phase = selectedPhaseOrdinal.create(context);
+        isPhaseSelected = true;
+        // Do not let a rate-limited RESULTS frame from the previous phase obscure the next
+        // phase's selector in FTCodeSim's Driver Station.
+        telemetry.clearAll();
+        context.addInterfaceHeader();
+        telemetry.addLine("Next phase: " + phaseDisplayName(selectedPhaseOrdinal));
+        telemetry.addLine("Choose automatic/manual mode, then press A.");
+        telemetry.update();
     }
 
-    private void resetStepResponse() {
-        stepMaxAccel = 0;
-        stepMaxVel = 0;
-        stepLastVel = 0;
-        stepTimeStamp = 0;
-        stepVelAtTimeStamp = 0;
-        stepLastTime = System.nanoTime();
-        stepStartTime = System.nanoTime();
-        timer.reset();
-
-        follower.setPose(new Pose(new Vector(Dist.of(0, DistUnit.IN), Dist.of(0, DistUnit.IN)), Angle.fromDeg(0)));
+    static Phase nextPhase(Phase current) {
+        int nextOrdinal = current.ordinal() + 1;
+        return nextOrdinal < phaseAmount ? phases[nextOrdinal] : null;
     }
 
-    private void updateFollowerConfig() {
-        followerConstants.headingCoeffs = new PDSCoefficients(headingP, headingD, headingS, 0);
-        followerConstants.driveCoeffs = new PDSCoefficients(translationP, translationD, translationS, 0);
-        followerConstants.lateralCoeffs = new PDSCoefficients(translationP, translationD, translationS, 0);
-        followerConstants.lateralKV = velocityFF;
-        followerConstants.headingTolerance = Angle.fromDeg(headingToleranceDeg);
-        followerConstants.distanceTolerance = Dist.fromIn(distanceToleranceIn);
-        followerConstants.tTolerance = tTolerance;
-        followerConstants.maxLateralAccel = maxLateralAccel;
+    static boolean velocityFeedbackTuned(double translationGain, double angularGain) {
+        return translationGain != 0.0 && angularGain != 0.0;
     }
 
-    private final ApexConfig customConfig = new ApexConfig() {
-        @Override
-        public BaseDrivetrainConfig<?> drivetrainConfig() { return baseConstants.drivetrainConfig(); }
-        @Override
-        public BaseLocalizerConfig<?> localizerConfig() { return baseConstants.localizerConfig(); }
-        @Override
-        public FollowerConstants followerConfig() { return followerConstants; }
-    };
+    private static String phaseDisplayName(Phase phase) {
+        if (phase == Phase.FEEDFORWARD) { return "FEEDFORWARD kS / kV RAMP"; }
+        if (phase == Phase.ACCELERATION_FEEDFORWARD) { return "ACCELERATION FEEDFORWARD kA"; }
+        return phase.name().replace('_', ' ');
+    }
 
-    private void saveConstantsToJson() {
-        String jsonPayload = "{\n" +
-                "  \"headingP\": " + headingP + ",\n" +
-                "  \"headingD\": " + headingD + ",\n" +
-                "  \"headingS\": " + headingS + ",\n" +
-                "  \"translationP\": " + translationP + ",\n" +
-                "  \"translationD\": " + translationD + ",\n" +
-                "  \"translationS\": " + translationS + ",\n" +
-                "  \"velocityFF\": " + velocityFF + ",\n" +
-                "  \"maxLateralAccel\": " + maxLateralAccel + "\n" +
-                "}";
-
-        try {
-            File outputFolder = new File("/sdcard/FIRST");
-            if (!outputFolder.exists()) outputFolder.mkdirs();
-            FileWriter fileWriter = new FileWriter(new File(outputFolder, "FollowerConstants.json"));
-            fileWriter.write(jsonPayload);
-            fileWriter.close();
-        } catch (IOException ignored) {
-            telemetry.addLine("WARNING: Values were not saved successfully");
-            telemetry.addData("Heading P", headingP);
-            telemetry.addData("Heading D", headingD);
-            telemetry.addData("Heading S", headingS);
-            telemetry.addData("Translation P", translationP);
-            telemetry.addData("Translation D", translationD);
-            telemetry.addData("Translation S", translationS);
-            telemetry.addData("Velocity FF", velocityFF);
-            telemetry.addData("Max Lateral Accel", maxLateralAccel);
-            telemetry.update();
+    private void finishTuningWorkflow() {
+        telemetry.clearAll();
+        context.addInterfaceHeader();
+        telemetry.addLine("Follower tuning complete for " + context.constants.getActiveProfile() + ".");
+        if (context.getFollower().getDrivetrain() instanceof drivetrains.DualActuated) {
+            telemetry.addLine("Run this tuner again and select the other mode to tune it separately.");
         }
+
+        // FTCodeSim does not move its Driver Station out of RUNNING when a LinearOpMode calls
+        // requestOpModeStop(). Keep the final lifecycle alive until the red Stop button is used.
+        if (Boolean.getBoolean(UNLOCK_PHASES_PROPERTY)) {
+            telemetry.addLine("Press the red STOP button to finish this simulation.");
+            telemetry.update();
+            while (opModeIsActive()) {
+                context.updateDebugMode(false);
+                sleep(50);
+            }
+            return;
+        }
+
+        telemetry.update();
+        requestOpModeStop();
     }
 }

@@ -41,7 +41,9 @@ captures/
 
 # IntelliJ
 *.iml
-.idea/
+/.idea/*
+!/.idea/inspectionProfiles/
+!/.idea/codeStyles/
 
 # For Mac users
 .DS_Store
@@ -79,3 +81,11 @@ lint/generated/
 lint/outputs/
 lint/tmp/
 # lint/reports/
+
+# Desktop simulation/test artifacts
+/work/
+/TeamCode/sim-logs/
+/TeamCode/Angular_Kinematics.png
+/TeamCode/Power_Utilization.png
+/TeamCode/Translational_Kinematics.png
+/gradle/gradle-daemon-jvm.properties

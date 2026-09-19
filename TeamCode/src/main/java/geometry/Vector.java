@@ -4,20 +4,22 @@ import android.annotation.SuppressLint;
 
 import androidx.annotation.NonNull;
 
-import util.DistUnit;
-
 /**
  * A class representing a 2D vector or point using {@link Dist} objects.
- * 
+ *
  * @author Dylan B. - 18597 RoboClovers - Delta
  */
-public final class Vector {
+public class Vector {
     private final Dist x;
     private final Dist y;
 
     // region Constructors and factory methods
+
     /** Creates a Vector from two Dist objects. */
-    public Vector(Dist x, Dist y) { this.x = x; this.y = y; }
+    public Vector(Dist x, Dist y) {
+        this.x = x;
+        this.y = y;
+    }
 
     /** Create a Vector with the given (x, y) in the specified unit */
     public static Vector of(double x, double y, DistUnit unit) {
@@ -35,9 +37,10 @@ public final class Vector {
 
     /** Create a Vector with X and Y equal to zero */
     public static Vector zero() { return new Vector(Dist.fromIn(0), Dist.fromIn(0)); }
-    // endregion
 
+    // endregion
     // region Getters
+
     /** @return the x {@link Dist} component of the vector */
     public Dist getX() { return x; }
 
@@ -56,11 +59,15 @@ public final class Vector {
     /** @return the magnitude squared of this Vector from the origin */
     public Dist getMagSq() { return Dist.fromIn(x.getIn() * x.getIn() + y.getIn() * y.getIn()); }
 
-    /** Calculates the theta of this vector relative to the positive X-axis. */
+    /** @return the theta of this vector relative to the positive X-axis. */
     public Angle getTheta() { return Angle.fromRad(Math.atan2(y.getIn(), x.getIn())); }
-    // endregion
 
+    /** @return true if both components of this Vector are finite numbers (not NaN or infinite). */
+    public boolean isFinite() { return Double.isFinite(x.getIn()) && Double.isFinite(y.getIn()); }
+
+    // endregion
     // region Arithmetic operations
+
     /** @return a Vector that is the sum of this Vector and another Vector */
     public Vector plus(Vector other) {
         return new Vector(this.x.plus(other.x), this.y.plus(other.y));
@@ -87,9 +94,10 @@ public final class Vector {
 
     /** @return the scalar cross product of this Vector and another Vector */
     public Dist cross(Vector other) { return this.x.times(other.y).minus(this.y.times(other.x)); }
-    // endregion
 
+    // endregion
     // region Other operations and methods
+
     /** @return the straight line distance from this vector to another vector */
     public Dist distanceTo(Vector other) { return this.minus(other).getMag(); }
 
@@ -123,9 +131,7 @@ public final class Vector {
     public Vector mirrorY() { return new Vector(this.x.mirror(), this.y); }
 
     /** @return a Vector that is the reflection of this Vector across another Vector */
-    public Vector reflect(Vector across) {
-        return across.plus(this.minus(across).times(-1.0));
-    }
+    public Vector reflect(Vector across) { return across.plus(this.minus(across).times(-1.0)); }
 
     /** @return a copy of this Vector */
     public Vector copy() { return new Vector(this.x.copy(), this.y.copy()); }
@@ -134,18 +140,14 @@ public final class Vector {
     @NonNull
     @Override
     public String toString() { return String.format("%s, %s", x.toString(), y.toString()); }
-    // endregion
 
     @Override
     public boolean equals(Object obj) {
-        // 1. Check for reference equality (same memory address)
-        if (this == obj) return true;
-
-        // 2. Check for null or mismatched class types
-        if (obj == null || getClass() != obj.getClass()) return false;
-
-        // 3. Safe cast and delegate component equality to the Dist objects
+        if (this == obj) { return true; }
+        if (obj == null || getClass() != obj.getClass()) { return false; }
         Vector other = (Vector) obj;
         return this.x.equals(other.x) && this.y.equals(other.y);
     }
+
+    // endregion
 }

@@ -14,38 +14,39 @@ import com.qualcomm.robotcore.util.TypeConversion;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
-import java.util.Objects;
+
+import org.json.JSONObject;
 
 import geometry.Dist;
-import geometry.Vector;
 import geometry.Pose;
-import util.DistUnit;
-import util.AngleUnit;
-import util.PoseFactory;
+import geometry.Vector;
+import geometry.AngleUnit;
+import geometry.DistUnit;
+import geometry.GeometryFactory;
 
 /**
  * goBILDA Pinpoint Odometry Computer localizer (uses custom driver class)
  *
  * @author Dylan B. - 18597 RoboClovers - Delta
  */
-public class Pinpoint extends BaseLocalizer<Pinpoint.Config> {
+public class Pinpoint extends BaseLocalizer<Pinpoint.Constants> {
     private final Driver pinpoint;
 
     public enum EncoderDirection { FORWARD, REVERSED }
     public enum GoBildaPods { goBILDA_SWINGARM_POD,  goBILDA_4_BAR_POD }
 
-    public Pinpoint(Pinpoint.Config config, HardwareMap hardwareMap) {
-        super(config);
+    public Pinpoint(Constants constants, HardwareMap hardwareMap) {
+        super(constants);
 
-        pinpoint = hardwareMap.get(Pinpoint.Driver.class, config.name);
-        pinpoint.setOffsets(config.offsets);
-        pinpoint.setEncoderDirections(config.xPodDirection, config.yPodDirection);
-        if (config.customEncoderResolution.getIn() != 0) {
-            pinpoint.setEncoderResolution(config.customEncoderResolution);
+        pinpoint = hardwareMap.get(Driver.class, constants.name);
+        pinpoint.setOffsets(constants.offsets);
+        pinpoint.setEncoderDirections(constants.xPodDirection, constants.yPodDirection);
+        if (constants.customEncoderResolution.getIn() == 0) {
+            pinpoint.setEncoderResolution(constants.encoderResolution);
         } else {
-            pinpoint.setEncoderResolution(config.encoderResolution);
+            pinpoint.setEncoderResolution(constants.customEncoderResolution);
         }
-        if (config.yawScalar != 0) { pinpoint.setYawScalar(config.yawScalar); }
+        if (constants.angularScalar != 0) { pinpoint.setYawScalar(constants.angularScalar); }
         pinpoint.resetPosAndIMU();
     }
 
@@ -53,89 +54,137 @@ public class Pinpoint extends BaseLocalizer<Pinpoint.Config> {
     public void update() {
         pinpoint.update();
         pose = pinpoint.getPosition();
-        velocity = pinpoint.getVelocity();
-        calculate(UpdateType.ACCELERATION);
+        calculate(pinpoint.getVelocity());
     }
+
+    /** Returns the raw X/Y pod encoder positions from the last bulk update. */
+    public int[] getPodTicks() { return pinpoint.getEncoderPositions(); }
 
     @Override
     public void setPose(Pose newPose) {
         pinpoint.setPosition(newPose);
+        resetKinematicEstimate(newPose);
     }
 
     /** Configuration class for goBILDA Pinpoint localizer. */
-    public static class Config extends BaseLocalizerConfig<Pinpoint.Config> {
-        public String name = "defaultPinpointNName";
+    public static class Constants implements BaseLocalizerConstants<Constants> {
+        public String name;
         public Vector offsets = Vector.zero();
         public EncoderDirection xPodDirection = EncoderDirection.FORWARD;
         public EncoderDirection yPodDirection = EncoderDirection.FORWARD;
         public GoBildaPods encoderResolution = GoBildaPods.goBILDA_4_BAR_POD;
         public Dist customEncoderResolution = Dist.zero(); // Overrides encoderResolution if != 0
-        public double yawScalar = 0; // Overrides the default
+        public double angularScalar = 0; // Overrides the default
+
+        @Override
+        public JSONObject getCalibrationValues() {
+            try {
+                return CalibrationJson.vector(offsets)
+                        .put("customEncoderResolutionIn", customEncoderResolution.getIn())
+                        .put("angularScalar", angularScalar)
+                        .put("xPodDirection", xPodDirection.name())
+                        .put("yPodDirection", yPodDirection.name());
+            } catch (Exception e) { throw new IllegalStateException(e); }
+        }
+
+        @Override
+        public void applyCalibrationValues(JSONObject values) {
+            offsets = CalibrationJson.vector(values, offsets);
+            customEncoderResolution = Dist.fromIn(CalibrationJson.finite(values,
+                    "customEncoderResolutionIn", customEncoderResolution.getIn()));
+            angularScalar = CalibrationJson.finite(values, "angularScalar", angularScalar);
+            xPodDirection = direction(values, "xPodDirection", xPodDirection);
+            yPodDirection = direction(values, "yPodDirection", yPodDirection);
+        }
 
         @Override
         public Pinpoint build(HardwareMap hardwareMap) {
-            if (Objects.equals(this.name, "defaultPinpointName")) {
-                throw new IllegalArgumentException("Pinpoint name is not set in the localizer config.");
+            if (name == null) {
+                throw new IllegalArgumentException(
+                        "Pinpoint name is not set in the localizer constants."
+                );
             }
             return new Pinpoint(this, hardwareMap);
         }
 
         /** Sets the name of the Pinpoint in the hardware map. */
-        public Config setName(String name) { this.name = name; return this; }
+        public Constants setName(String name) {
+            this.name = name;
+            return this;
+        }
 
         /** Sets the X and Y pod offsets of the Pinpoint */
-        public Config setOffsets(double xOffset, double yOffset, DistUnit distanceUnit) {
-            this.offsets = Vector.of(xOffset, yOffset, distanceUnit); return this;
+        public Constants setOffsets(double xOffset, double yOffset, DistUnit distanceUnit) {
+            this.offsets = Vector.of(xOffset, yOffset, distanceUnit);
+            return this;
         }
-
-        /** Sets the X and Y pod offsets of the Pinpoint express as a Vector */
-        public Config setOffsets(Vector offsets) { this.offsets = offsets; return this; }
 
         /** Sets the direction of the X and Y encoders of the Pinpoint. */
-        public Config setEncoderDirections(EncoderDirection xPodDirection, EncoderDirection yPodDirection) {
-            this.xPodDirection = xPodDirection; this.yPodDirection = yPodDirection; return this;
+        public Constants setEncoderDirections(EncoderDirection xPodDirection,
+                                              EncoderDirection yPodDirection) {
+            this.xPodDirection = xPodDirection;
+            this.yPodDirection = yPodDirection;
+            return this;
         }
 
-        /** Sets the encoder resolution of the Pinpoint in ticks per mm using goBILDA pods. */
-        public Config setEncoderResolution(GoBildaPods encoderResolution) {
-            this.encoderResolution = encoderResolution; return this;
+        /** Sets the encoder resolution of the Pinpoint in ticks per unit using goBILDA pods. */
+        public Constants setEncoderResolution(GoBildaPods encoderResolution) {
+            this.encoderResolution = encoderResolution;
+            return this;
         }
 
-        /** Sets the encoder resolution of the Pinpoint in ticks per mm. */
-        public Config setEncoderResolution(Dist customEncoderResolution) {
-            this.customEncoderResolution = customEncoderResolution; return this;
+        /** Sets the encoder resolution of the Pinpoint in ticks per unit. */
+        public Constants setEncoderResolution(Dist customEncoderResolution) {
+            this.customEncoderResolution = customEncoderResolution;
+            return this;
         }
 
-        /** Sets the yaw scalar of the Pinpoint. It is not recommended to change this values. */
-        public Config setYawScalar(double yawScalar) {
-            this.yawScalar = yawScalar; return this;
+        /** Sets the angular scalar of the Pinpoint. It is not recommended to change this values. */
+        public Constants setAngularScalar(double angularScalar) {
+            this.angularScalar = angularScalar;
+            return this;
+        }
+
+        private static EncoderDirection direction(JSONObject values, String key,
+                                                  EncoderDirection fallback) {
+            try { return EncoderDirection.valueOf(values.optString(key, fallback.name())); }
+            catch (IllegalArgumentException ignored) { return fallback; }
         }
     }
 
     /**
-     * Driver class for the goBILDA Pinpoint Odometry Computer. This code is a modified version of the
-     * original goBILDA Pinpoint Driver created by Ethan Doak from goBILDA. It has been modified to
-     * better suit the needs of Apex Pathing. The original code can be found on the goBILDA
+     * Driver class for the goBILDA Pinpoint Odometry Computer. This code is a modified version
+     * of the original goBILDA Pinpoint Driver created by Ethan Doak from goBILDA. It has been
+     * modified to better suit the needs of Apex Pathing. The original code can be found on the
+     * goBILDA
      * <a href="https://github.com/goBILDA-Official/FtcRobotController-Add-Pinpoint/">GitHub</a>.
      *
      * @author Ethan Doak - goBILDA
-     * @author Dylan B. - 18597 RoboClovers Delta
+     * @author Dylan B. - 18597 RoboClovers - Delta
      */
+    @SuppressWarnings("ConstantExpression")
     @I2cDeviceType
     @DeviceProperties(
             name = "goBILDA® Pinpoint Odometry Computer",
             xmlTag = "goBILDAPinpoint",
-            description = "goBILDA® Pinpoint Odometry Computer (IMU Sensor Fusion for 2 Wheel Odometry), optimized for Apex Pathing"
+            description = "goBILDA® Pinpoint Odometry Computer (IMU Sensor Fusion for 2 Wheel " +
+                    "Odometry), optimized for Apex Pathing"
     )
     public static class Driver extends I2cDeviceSynchDevice<I2cDeviceSynchSimple> {
-        private final PoseFactory pose = new PoseFactory(DistUnit.MM, AngleUnit.RAD);
+        final int POSITION_CORRUPT_THRESHOLD = 5000; // Millimeters (bigger than standard and CRI field)
+        final int HEADING_CORRUPT_THRESHOLD = 120; // Rad
+        final int VELOCITY_CORRUPT_THRESHOLD = 1000; // Millimeters/s (a robot can't move this fast.... right?)
+        final int HEADING_VELOCITY_CORRUPT_THRESHOLD = 15; // Rad/s
+
+        private final GeometryFactory geometryFactory = new GeometryFactory()
+                .setDistUnit(DistUnit.MM)
+                .setAngleUnit(AngleUnit.RAD);
+        private Pose pose = geometryFactory.pose();
+        private Pose velocity = geometryFactory.pose();
+
         private int loopTime = 0;
-        private float xPosition = 0;
-        private float yPosition = 0;
-        private float hOrientation = 0;
-        private float xVelocity = 0;
-        private float yVelocity = 0;
-        private float hVelocity = 0;
+        private int encoderX;
+        private int encoderY;
 
         private static final float goBILDA_SWINGARM_POD = 13.26291192f; // goBILDA Swingarm Pod TPM
         private static final float goBILDA_4_BAR_POD = 19.89436789f; // goBILDA 4 Bar Pod TPM
@@ -149,18 +198,18 @@ public class Pinpoint extends BaseLocalizer<Pinpoint.Config> {
         }
 
         @Override
-        public Manufacturer getManufacturer() { return Manufacturer.Other; }
-
-        @Override
         protected synchronized boolean doInitialize() {
-            ((LynxI2cDeviceSynch)(deviceClient)).setBusSpeed(LynxI2cDeviceSynch.BusSpeed.FAST_400K);
+            ((LynxI2cDeviceSynch) deviceClient).setBusSpeed(LynxI2cDeviceSynch.BusSpeed.FAST_400K);
             return true;
         }
 
         @Override
+        public Manufacturer getManufacturer() { return Manufacturer.GoBilda; }
+
+        @Override
         public String getDeviceName() { return "goBILDA® Pinpoint Odometry Computer"; }
 
-        // I2C registers
+        /** I2C registers */
         private enum Register {
             DEVICE_ID(1),
             DEVICE_VERSION(2),
@@ -182,65 +231,75 @@ public class Pinpoint extends BaseLocalizer<Pinpoint.Config> {
             BULK_READ(18);
 
             private final int bVal;
+
             Register(int bVal) { this.bVal = bVal; }
         }
 
         /**
          * Writes an int to the i2c device
-         * @param reg the register to write the int to
+         *
          * @param i the integer to write to the register
          */
-        private void writeInt(final Register reg, int i){
-            deviceClient.write(reg.bVal, TypeConversion.intToByteArray(i,ByteOrder.LITTLE_ENDIAN));
+        private void writeInt(int i) {
+            deviceClient.write(Register.DEVICE_CONTROL.bVal, TypeConversion.intToByteArray(i,
+                    ByteOrder.LITTLE_ENDIAN));
         }
 
         /**
          * Converts a byte array to a float value
+         *
          * @param byteArray byte array to transform
-         * @param byteOrder order of byte array to convert
          * @return the float value stored by the byte array
          */
-        private float byteArrayToFloat(byte[] byteArray, ByteOrder byteOrder){
-            return ByteBuffer.wrap(byteArray).order(byteOrder).getFloat();
+        private float byteArrayToFloat(byte[] byteArray) {
+            return ByteBuffer.wrap(byteArray).order(ByteOrder.LITTLE_ENDIAN).getFloat();
         }
 
         /**
          * Converts a float to a byte array
+         *
          * @param value the float array to convert
          * @return the byte array converted from the float
          */
-        private byte [] floatToByteArray (float value, ByteOrder byteOrder) {
-            return ByteBuffer.allocate(4).order(byteOrder).putFloat(value).array();
+        private byte[] floatToByteArray(float value) {
+            return ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putFloat(value).array();
         }
 
         /**
          * Writes a byte array to a register on the i2c device
+         *
          * @param reg the register to write to
          * @param bytes the byte array to write
          */
-        private void writeByteArray (Register reg, byte[] bytes){ deviceClient.write(reg.bVal,bytes); }
-
-        /**
-         * Writes a float to a register on the i2c device
-         * @param reg the register to write to
-         * @param f the float to write
-         */
-        private void writeFloat (Register reg, float f){
-            byte[] bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putFloat(f).array();
-            deviceClient.write(reg.bVal,bytes);
+        private void writeByteArray(Register reg, byte[] bytes) {
+            deviceClient.write(reg.bVal, bytes);
         }
 
         /**
-         * Confirm that the number received is a number, and does not include a change above the threshold
+         * Writes a float to a register on the i2c device
+         *
+         * @param reg the register to write to
+         * @param f the float to write
+         */
+        private void writeFloat(Register reg, float f) {
+            byte[] bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+                    .putFloat(f).array();
+            deviceClient.write(reg.bVal, bytes);
+        }
+
+        /**
+         * Confirm that the number received is a number, and does not include a change above the
+         * threshold
+         *
          * @param oldValue the reading from the previous cycle
          * @param newValue the new reading
          * @param threshold the maximum change between this reading and the previous one
-         * @param bulkUpdate true if we are updating the loopTime variable. If not it should be false.
          * @return newValue if the position is good, oldValue otherwise
          */
-        private Float isPositionCorrupt(float oldValue, float newValue, int threshold, boolean bulkUpdate){
-            boolean noData = bulkUpdate && (loopTime < 1);
-            boolean isCorrupt = noData || Float.isNaN(newValue) || Math.abs(newValue - oldValue) > threshold;
+        private double isPositionCorrupt(double oldValue, double newValue, int threshold) {
+            boolean noData = loopTime < 1;
+            boolean isCorrupt = noData || Double.isNaN(newValue) ||
+                    Math.abs(newValue - oldValue) > threshold;
 
             if (!isCorrupt) { return newValue; }
 
@@ -248,61 +307,74 @@ public class Pinpoint extends BaseLocalizer<Pinpoint.Config> {
         }
 
         /**
-         * Confirm that the number received is a number, and does not include a change above the threshold
+         * Confirm that the number received is a number, and does not include a change above the
+         * threshold
+         *
          * @param oldValue the reading from the previous cycle
          * @param newValue the new reading
          * @param threshold the velocity allowed to be reported
          * @return newValue if the velocity is good, oldValue otherwise
          */
-        private Float isVelocityCorrupt(float oldValue, float newValue, int threshold){
-            boolean isCorrupt = Float.isNaN(newValue) || Math.abs(newValue) > threshold;
+        private double isVelocityCorrupt(double oldValue, double newValue, int threshold) {
+            boolean isCorrupt = Double.isNaN(newValue) || Math.abs(newValue) > threshold;
 
             if (!isCorrupt) { return newValue; }
 
             return oldValue;
         }
 
-        /**
-         * Call this once per loop to read new data from the Odometry Computer.
-         */
+        /** Call this once per loop to read new data from the Odometry Computer. */
         public void update() {
-            // Set thresholds well above any normal values to detect corruption
-            final int positionThreshold = 5000;
-            final int headingThreshold = 120;
-            final int velocityThreshold = 10000;
-            final int headingVelocityThreshold = 120;
-
-            float oldPosX = xPosition;
-            float oldPosY = yPosition;
-            float oldPosH = hOrientation;
-            float oldVelX = xVelocity;
-            float oldVelY = yVelocity;
-            float oldVelH = hVelocity;
 
             byte[] bArr = deviceClient.read(Register.BULK_READ.bVal, 40);
-            loopTime = byteArrayToInt(Arrays.copyOfRange  (bArr, 4, 8),  ByteOrder.LITTLE_ENDIAN);
-            xPosition = byteArrayToFloat(Arrays.copyOfRange(bArr, 16,20), ByteOrder.LITTLE_ENDIAN);
-            yPosition = byteArrayToFloat(Arrays.copyOfRange(bArr, 20,24), ByteOrder.LITTLE_ENDIAN);
-            hOrientation = byteArrayToFloat(Arrays.copyOfRange(bArr, 24,28), ByteOrder.LITTLE_ENDIAN);
-            xVelocity = byteArrayToFloat(Arrays.copyOfRange(bArr, 28,32), ByteOrder.LITTLE_ENDIAN);
-            yVelocity = byteArrayToFloat(Arrays.copyOfRange(bArr, 32,36), ByteOrder.LITTLE_ENDIAN);
-            hVelocity = byteArrayToFloat(Arrays.copyOfRange(bArr, 36,40), ByteOrder.LITTLE_ENDIAN);
+            loopTime = byteArrayToInt(Arrays.copyOfRange(bArr, 4, 8), ByteOrder.LITTLE_ENDIAN);
+            encoderX = byteArrayToInt(Arrays.copyOfRange(bArr, 8, 12), ByteOrder.LITTLE_ENDIAN);
+            encoderY = byteArrayToInt(Arrays.copyOfRange(bArr, 12, 16), ByteOrder.LITTLE_ENDIAN);
 
-            /*
-             * Check to see if any of the floats we have received from the device are NaN or are too large
-             * if they are, we return the previously read value and alert the user via the DeviceStatus Enum.
-             */
-            xPosition = isPositionCorrupt(oldPosX, xPosition, positionThreshold, true);
-            yPosition = isPositionCorrupt(oldPosY, yPosition, positionThreshold, true);
-            hOrientation = isPositionCorrupt(oldPosH, hOrientation, headingThreshold, true);
-            xVelocity = isVelocityCorrupt(oldVelX, xVelocity, velocityThreshold);
-            yVelocity = isVelocityCorrupt(oldVelY, yVelocity, velocityThreshold);
-            hVelocity = isVelocityCorrupt(oldVelH, hVelocity, headingVelocityThreshold);
+            pose = geometryFactory.pose(
+                    isPositionCorrupt(
+                            pose.getX().getMm(),
+                            byteArrayToFloat(Arrays.copyOfRange(bArr, 16, 20)),
+                            POSITION_CORRUPT_THRESHOLD
+                    ),
+                    isPositionCorrupt(
+                            pose.getY().getMm(),
+                            byteArrayToFloat(Arrays.copyOfRange(bArr, 20, 24)),
+                            POSITION_CORRUPT_THRESHOLD
+                    ),
+                    isPositionCorrupt(
+                            pose.getHeading().getRad(),
+                            byteArrayToFloat(Arrays.copyOfRange(bArr, 24, 28)),
+                            HEADING_CORRUPT_THRESHOLD
+                    )
+            );
+
+            velocity = geometryFactory.pose(
+                    isVelocityCorrupt(
+                            velocity.getX().getMm(),
+                            byteArrayToFloat(Arrays.copyOfRange(bArr, 28, 32)),
+                            VELOCITY_CORRUPT_THRESHOLD
+                    ),
+                    isVelocityCorrupt(
+                            velocity.getY().getMm(),
+                            byteArrayToFloat(Arrays.copyOfRange(bArr, 32, 36)),
+                            VELOCITY_CORRUPT_THRESHOLD
+                    ),
+                    isVelocityCorrupt(
+                            velocity.getHeading().getRad(),
+                            byteArrayToFloat(Arrays.copyOfRange(bArr, 36, 40)),
+                            HEADING_VELOCITY_CORRUPT_THRESHOLD
+                    )
+            );
         }
 
+        /** Returns raw X/Y encoder counts captured by the latest bulk read. */
+        public int[] getEncoderPositions() { return new int[] {encoderX, encoderY}; }
+
         /**
-         * Sets the odometry pod positions relative to the point that the odometry computer tracks around.
-         * The most common tracking position is the center of the robot.
+         * Sets the odometry pod positions relative to the point that the odometry computer
+         * tracks around. The most common tracking position is the center of the robot.
+         *
          * @param offset a Vector containing the X and Y offsets of the odometry pods
          */
         public void setOffsets(Vector offset) {
@@ -311,96 +383,94 @@ public class Pinpoint extends BaseLocalizer<Pinpoint.Config> {
         }
 
         /**
-         * Resets the current position to 0,0,0 and recalibrates the Odometry Computer's internal IMU.
-         * <strong> Robot MUST be stationary </strong> <br><br>
-         * Device takes a large number of samples, and uses those as the gyroscope zero-offset. This takes approximately 0.25 seconds.
+         * Resets the current position to 0,0,0 and recalibrates the Odometry Computer's internal
+         * IMU. <strong> Robot MUST be stationary </strong> <br><br> The device takes a large number
+         * of samples, and uses those as the gyroscope zero-offset. This takes approximately 0.25
+         * seconds.
          */
-        public void resetPosAndIMU() { writeInt(Register.DEVICE_CONTROL, 1<<1); }
+        public void resetPosAndIMU() { writeInt(2); }
 
         /**
          * Can reverse the direction of each encoder.
-         * @param xEncoder FORWARD or REVERSED, X (forward) pod should increase when the robot is moving forward
-         * @param yEncoder FORWARD or REVERSED, Y (strafe) pod should increase when the robot is moving left
+         *
+         * @param xEncoder FORWARD or REVERSED, X (forward) pod should increase when the robot is
+         *                 moving forward
+         * @param yEncoder FORWARD or REVERSED, Y (strafe) pod should increase when the robot is
+         *                 moving left
          */
         public void setEncoderDirections(EncoderDirection xEncoder, EncoderDirection yEncoder) {
-            if (xEncoder == EncoderDirection.FORWARD){ writeInt(Register.DEVICE_CONTROL, 1<<5); }
-            else if (xEncoder == EncoderDirection.REVERSED) { writeInt(Register.DEVICE_CONTROL, 1<<4); }
+            if (xEncoder == EncoderDirection.FORWARD) {
+                writeInt(32);
+            } else if (xEncoder == EncoderDirection.REVERSED) {
+                writeInt(16);
+            }
 
-            if (yEncoder == EncoderDirection.FORWARD){ writeInt(Register.DEVICE_CONTROL, 1<<3); }
-            else if (yEncoder == EncoderDirection.REVERSED){ writeInt(Register.DEVICE_CONTROL, 1<<2); }
+            if (yEncoder == EncoderDirection.FORWARD) {
+                writeInt(8);
+            } else if (yEncoder == EncoderDirection.REVERSED) {
+                writeInt(4);
+            }
         }
 
         /**
-         * If you're using goBILDA odometry pods, the ticks-per-mm values are stored here for easy access.<br><br>
+         * If you're using goBILDA odometry pods, the ticks-per-mm values are stored here for
+         * easy access.<br><br>
+         *
          * @param pods goBILDA_SWINGARM_POD or goBILDA_4_BAR_POD
          */
         public void setEncoderResolution(GoBildaPods pods) {
             if (pods == GoBildaPods.goBILDA_SWINGARM_POD) {
-                writeByteArray(Register.MM_PER_TICK, (floatToByteArray(goBILDA_SWINGARM_POD, ByteOrder.LITTLE_ENDIAN)));
+                writeByteArray(Register.MM_PER_TICK, floatToByteArray(goBILDA_SWINGARM_POD));
             } else if (pods == GoBildaPods.goBILDA_4_BAR_POD) {
-                writeByteArray(Register.MM_PER_TICK, (floatToByteArray(goBILDA_4_BAR_POD, ByteOrder.LITTLE_ENDIAN)));
+                writeByteArray(Register.MM_PER_TICK, floatToByteArray(goBILDA_4_BAR_POD));
             }
         }
 
         /**
          * Sets the encoder resolution in ticks per mm of the odometry pods. <br>
-         * You can find this number by dividing the counts-per-revolution of your encoder by the circumference of the wheel.
+         * You can find this number by dividing the counts-per-revolution of your encoder by the
+         * circumference of the wheel.
+         *
          * @param ticksPerUnit the ticks per distance unit of your odometry pod encoders.
          */
         public void setEncoderResolution(Dist ticksPerUnit) {
             double resolution = ticksPerUnit.getMm();
-            writeByteArray(Register.MM_PER_TICK, (floatToByteArray((float) resolution, ByteOrder.LITTLE_ENDIAN)));
+            writeByteArray(Register.MM_PER_TICK, floatToByteArray((float) resolution));
         }
 
         /**
-         * Tuning this value should be unnecessary.<br>
-         * The goBILDA Odometry Computer has a per-device tuned yaw offset already applied when you receive it.<br><br>
-         * This is a scalar that is applied to the gyro's yaw value. Increasing it will mean it will report more than one degree for every degree the sensor fusion algorithm measures. <br><br>
-         * You can tune this variable by rotating the robot a large amount (10 full turns is a good starting place) and comparing the amount that the robot rotated to the amount measured.
-         * Rotating the robot exactly 10 times should measure 3600°. If it measures more or less, divide moved amount by the measured amount and apply that value to the Yaw Offset.<br><br>
-         * If you find that to get an accurate heading number you need to apply a scalar of more than 1.05, or less than 0.95, your device may be bad. Please reach out to tech@gobilda.com
+         * Tuning this value should be unnecessary. <br> The goBILDA Odometry Computer has a
+         * per-device tuned yaw offset already applied when you receive it.<br><br> This is a scalar
+         * that is applied to the gyro's yaw value. Increasing it will mean it will report more than
+         * one degree for every degree the sensor fusion algorithm measures.
+         *
          * @param yawOffset A scalar for the robot's heading.
          */
         public void setYawScalar(double yawOffset) {
-            writeByteArray(Register.YAW_SCALAR, (floatToByteArray((float) yawOffset, ByteOrder.LITTLE_ENDIAN)));
+            writeByteArray(Register.YAW_SCALAR, floatToByteArray((float) yawOffset));
         }
 
         /**
-         * Send a position that the Pinpoint should use to track your robot relative to. You can use this to
-         * update the estimated position of your robot with new external sensor data, or to run a robot
-         * in field coordinates. <br><br>
-         * This overrides the current position. <br><br>
-         * <strong>Using this feature to track your robot's position in field coordinates:</strong> <br>
-         * When you start your code, send a Pose2D that describes the starting position on the field of your robot. <br>
-         * Say you're on the red alliance, your robot is against the wall and closer to the audience side,
-         * and the front of your robot is pointing towards the center of the field.
-         * You can send a setPosition with something like -600mm x, -1200mm Y, and 90 degrees. The pinpoint would then always
-         * keep track of how far away from the center of the field you are. <br><br>
-         * <strong>Using this feature to update your position with additional sensors: </strong><br>
-         * Some robots have a secondary way to locate their robot on the field. This is commonly
-         * Apriltag localization in FTC, but it can also be something like a distance sensor.
-         * Often these external sensors are absolute (meaning they measure something about the field)
-         * so their data is very accurate. But they can be slower to read, or you may need to be in a very specific
-         * position on the field to use them. In that case, spend most of your time relying on the Pinpoint
-         * to determine your location. Then when you pull a new position from your secondary sensor,
-         * send a setPosition command with the new position. The Pinpoint will then track your movement
-         * relative to that new, more accurate position.
+         * Send a position that the Pinpoint should use to track your robot relative to.
+         *
          * @param pos a Pose2D describing the robot's new position.
          */
         public void setPosition(Pose pos) {
-            writeByteArray(Register.X_POSITION, (floatToByteArray((float) pos.getX().getMm(), ByteOrder.LITTLE_ENDIAN)));
-            writeByteArray(Register.Y_POSITION, (floatToByteArray((float) pos.getY().getMm(), ByteOrder.LITTLE_ENDIAN)));
-            writeByteArray(Register.H_ORIENTATION, (floatToByteArray((float) pos.getHeading().getRad(), ByteOrder.LITTLE_ENDIAN)));
+            writeByteArray(Register.X_POSITION, floatToByteArray((float) pos.getX().getMm()));
+            writeByteArray(Register.Y_POSITION, floatToByteArray((float) pos.getY().getMm()));
+            writeByteArray(Register.H_ORIENTATION,
+                    floatToByteArray((float) pos.getHeading().getRad()));
         }
 
         /**
          * @return a Pose2D containing the estimated position of the robot
          */
-        public Pose getPosition() { return pose.of(xPosition, yPosition, hOrientation); }
+        public Pose getPosition() { return pose; }
 
         /**
-         * @return a Pose2D containing the estimated velocity of the robot, velocity is unit per second
+         * @return a Pose2D containing the estimated velocity of the robot, velocity is unit per
+         * second.
          */
-        public Pose getVelocity() { return pose.of(xVelocity, yVelocity, hVelocity); }
+        public Pose getVelocity() { return velocity; }
     }
 }

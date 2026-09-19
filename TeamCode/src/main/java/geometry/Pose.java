@@ -4,12 +4,9 @@ import android.annotation.SuppressLint;
 
 import androidx.annotation.NonNull;
 
-import util.AngleUnit;
-import util.DistUnit;
-
 /**
  * A class representing a 2D position, which consists of a position Vector and a heading Angle.
- * You should consider using a {@link util.PoseFactory} to create Pose objects instead of using
+ * You should consider using a {@link GeometryFactory} to create Pose objects instead of using
  * the constructors in this class directly.
  *
  * @author Dylan B. - 18597 RoboClovers - Delta
@@ -19,6 +16,7 @@ public class Pose {
     private final Angle heading;
 
     // region Common poses
+
     /** Common poses on an FTC field defined in the Apex coordinate system. */
     public enum Common { // Common poses are defined in inches
         CENTER(0, 0),
@@ -45,19 +43,24 @@ public class Pose {
             return withHeading(Angle.of(heading, angleUnit));
         }
     }
-    // endregion
 
+    // endregion
     // region Constructors and factory methods
+
     /** Creates a Pose from a position Vector and a heading Angle. */
-    public Pose(Vector position, Angle heading) { this.position = position; this.heading = heading; }
+    public Pose(Vector position, Angle heading) {
+        this.position = position;
+        this.heading = heading;
+    }
 
-    /** Creates a Pose with X, Y, and heading equal to zero */
+    /** @return a Pose with X, Y, and heading equal to zero */
     public static Pose zero() { return new Pose(Vector.zero(), Angle.fromRad(0)); }
-    // endregion
 
+    // endregion
     // region Getters
+
     /** @return the position of this Pose as a Vector */
-    public Vector getPos() { return position; }
+    public Vector getVec() {return position;}
 
     /** @return the x component of the position as a {@link Dist} */
     public Dist getX() { return position.getX(); }
@@ -76,9 +79,10 @@ public class Pose {
 
     /** @return the heading of this Pose in the specified angle unit */
     public double getHeading(AngleUnit unit) { return heading.get(unit); }
-    // endregion
 
+    // endregion
     // region Arithmetic operations
+
     /** @return a new Pose that is the sum of this Pose and another Pose. */
     public Pose plus(Pose other) {
         return new Pose(this.position.plus(other.position), this.heading.plus(other.heading));
@@ -98,9 +102,10 @@ public class Pose {
     public Pose div(double scalar) {
         return new Pose(this.position.div(scalar), this.heading.div(scalar));
     }
-    // endregion
 
+    // endregion
     // region Other operations and methods
+
     /** @return the straight line distance from this vector to another vector */
     public Dist distanceTo(Pose other) { return this.position.distanceTo(other.position); }
 
